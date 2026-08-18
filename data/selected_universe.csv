@@ -1,0 +1,34 @@
+sector_id,sector_name,ticker,company_name,market_cap_jpy,market_cap_as_of,listing_date,continuous_listing_verified,market_cap_rank_in_sector,sector_source,metadata_source,market_cap_currency,market_cap_calculation_method,market_cap_retrieved_at
+communication_services,コミュニケーション・サービス,9984.T,SoftBank Group,33224724054016.0,2026-08-18,1994-07-01,True,1,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:41.451409+00:00
+communication_services,コミュニケーション・サービス,9432.T,Nippon Telegraph and Telephone,13024962281472.0,2026-08-18,1987-02-09,True,2,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:40.078950+00:00
+communication_services,コミュニケーション・サービス,9433.T,KDDI,10551378837504.0,2026-08-18,1993-06-01,True,3,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:40.765742+00:00
+consumer_discretionary,一般消費財・サービス,7203.T,Toyota Motor,35783662632960.0,2026-08-18,1949-05-16,True,1,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:28.427492+00:00
+consumer_discretionary,一般消費財・サービス,9983.T,Fast Retailing,23016893317120.0,2026-08-18,1994-07-14,True,2,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:29.855321+00:00
+consumer_discretionary,一般消費財・サービス,6758.T,Sony Group,21764451074048.0,2026-08-18,1958-12-01,True,3,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:29.151175+00:00
+consumer_staples,生活必需品,2914.T,Japan Tobacco,12306778947584.0,2026-08-18,1994-10-27,True,1,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:30.557343+00:00
+consumer_staples,生活必需品,4452.T,Kao,3171176939520.0,2026-08-18,1949-05-16,True,2,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:31.454911+00:00
+consumer_staples,生活必需品,2502.T,Asahi Group Holdings,2411930058752.0,2026-08-18,1949-05-16,True,3,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:32.167248+00:00
+energy,エネルギー,1605.T,INPEX,4532657979392.0,2026-08-18,2006-04-03,True,1,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:20.645539+00:00
+energy,エネルギー,5020.T,ENEOS Holdings,3510164783104.0,2026-08-18,2010-04-01,True,2,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:21.892675+00:00
+energy,エネルギー,5019.T,Idemitsu Kosan,1642698244096.0,2026-08-18,2006-10-24,True,3,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:22.589291+00:00
+financials,金融,8306.T,Mitsubishi UFJ Financial Group,41205693939712.0,2026-08-18,2001-04-02,True,1,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:35.620773+00:00
+financials,金融,8316.T,Sumitomo Mitsui Financial Group,26302805442560.0,2026-08-18,2002-12-01,True,2,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:36.484901+00:00
+financials,金融,8411.T,Mizuho Financial Group,20785257250816.0,2026-08-18,2003-03-01,True,3,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:37.252202+00:00
+health_care,ヘルスケア,4502.T,Takeda Pharmaceutical,9104677404672.0,2026-08-18,1949-05-16,True,1,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:33.401366+00:00
+health_care,ヘルスケア,4568.T,Daiichi Sankyo,4913063526400.0,2026-08-18,1949-05-16,True,2,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:34.121006+00:00
+health_care,ヘルスケア,4503.T,Astellas Pharma,4142758363136.0,2026-08-18,2005-12-02,True,3,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:34.859254+00:00
+industrials,資本財・サービス,6501.T,Hitachi,24681438511104.0,2026-08-18,1949-05-16,True,1,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:26.981351+00:00
+industrials,資本財・サービス,7011.T,Mitsubishi Heavy Industries,14684114649088.0,2026-08-18,1950-05-01,True,2,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:26.267131+00:00
+industrials,資本財・サービス,6301.T,Komatsu,6369334263808.0,2026-08-18,1949-05-16,True,3,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:27.707483+00:00
+information_technology,情報技術,6857.T,Advantest,25901016285184.0,2026-08-18,1983-09-01,True,1,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:38.687458+00:00
+information_technology,情報技術,8035.T,Tokyo Electron,25613257670656.0,2026-08-18,1980-06-01,True,2,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:37.967930+00:00
+information_technology,情報技術,6702.T,Fujitsu,6233427804160.0,2026-08-18,1954-10-01,True,3,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:39.390855+00:00
+materials,素材,4063.T,Shin-Etsu Chemical,11545806372864.0,2026-08-18,1949-05-16,True,1,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:23.311522+00:00
+materials,素材,5401.T,Nippon Steel,3624957116416.0,2026-08-18,1950-10-02,True,2,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:25.534439+00:00
+materials,素材,5201.T,AGC,1260344705024.0,2026-08-18,1950-06-01,True,3,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:24.439106+00:00
+real_estate,不動産,8802.T,Mitsubishi Estate,4323677831168.0,2026-08-18,1953-05-01,True,1,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:45.179571+00:00
+real_estate,不動産,8801.T,Mitsui Fudosan,3888859840512.0,2026-08-18,1949-05-16,True,2,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:44.454434+00:00
+real_estate,不動産,8830.T,Sumitomo Realty and Development,3060864385024.0,2026-08-18,1973-06-01,True,3,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:45.226914+00:00
+utilities,公益事業,9503.T,Kansai Electric Power,2672064987136.0,2026-08-18,1951-05-01,True,1,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:43.742306+00:00
+utilities,公益事業,9502.T,Chubu Electric Power,2152871624704.0,2026-08-18,1951-05-01,True,2,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:43.005402+00:00
+utilities,公益事業,9501.T,Tokyo Electric Power Company Holdings,840617230336.0,2026-08-18,1951-08-01,True,3,stock_master,yahoo_finance,JPY,Yahoo Finance marketCap,2026-08-18T08:48:42.296639+00:00

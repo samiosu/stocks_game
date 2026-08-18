@@ -1,0 +1,62 @@
+yahoo_to_sector_id:
+  Energy: energy
+  Basic Materials: materials
+  Industrials: industrials
+  Consumer Cyclical: consumer_discretionary
+  Consumer Defensive: consumer_staples
+  Healthcare: health_care
+  Financial Services: financials
+  Technology: information_technology
+  Communication Services: communication_services
+  Utilities: utilities
+  Real Estate: real_estate
+
+gics_to_sector_id:
+  Energy: energy
+  Materials: materials
+  Industrials: industrials
+  Consumer Discretionary: consumer_discretionary
+  Consumer Staples: consumer_staples
+  Health Care: health_care
+  Financials: financials
+  Information Technology: information_technology
+  Communication Services: communication_services
+  Utilities: utilities
+  Real Estate: real_estate
+
+# Optional JPX 33-industry mapping. A row can always be superseded by
+# data/sector_overrides.csv; unmapped values remain excluded.
+jpx_to_sector_id:
+  水産・農林業: consumer_staples
+  鉱業: materials
+  建設業: industrials
+  食料品: consumer_staples
+  繊維製品: consumer_discretionary
+  パルプ・紙: materials
+  化学: materials
+  医薬品: health_care
+  石油・石炭製品: energy
+  ゴム製品: materials
+  ガラス・土石製品: materials
+  鉄鋼: materials
+  非鉄金属: materials
+  金属製品: materials
+  機械: industrials
+  電気機器: information_technology
+  輸送用機器: consumer_discretionary
+  精密機器: health_care
+  その他製品: consumer_discretionary
+  電気・ガス業: utilities
+  陸運業: industrials
+  海運業: industrials
+  空運業: industrials
+  倉庫・運輸関連業: industrials
+  卸売業: industrials
+  小売業: consumer_discretionary
+  銀行業: financials
+  証券、商品先物取引業: financials
+  保険業: financials
+  その他金融業: financials
+  不動産業: real_estate
+  情報・通信業: communication_services
+  サービス業: industrials

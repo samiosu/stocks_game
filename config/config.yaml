@@ -1,0 +1,89 @@
+paths:
+  sector_mapping: config/sector_mapping.yaml
+  sector_overrides: data/sector_overrides.csv
+  listing_overrides: data/metadata/listing_overrides.csv
+  metadata_cache: data/metadata/metadata_cache.parquet
+  stock_master: data/metadata/stock_master.csv
+  selected_universe: data/selected_universe.csv
+  raw_prices: data/raw/prices.parquet
+  raw_indices: data/raw/indices.parquet
+  stock_features: data/processed/stock_features.parquet
+  sector_data: data/processed/sector_data.parquet
+  feature_schema: data/processed/feature_schema.json
+  scaler: models/feature_scaler.pkl
+  checkpoint: models/gru_model.pt
+  generated_prices: data/generated/generated_prices.parquet
+  raw_generated_returns: reports/raw_generated_returns.csv
+  evaluation_report: reports/evaluation_report.html
+
+data:
+  start_date: "2015-01-01"
+  as_of: null
+  index_tickers:
+    - "^N225"
+    - "^TPX"
+  index_fallbacks:
+    "^TPX":
+      - "1306.T"
+  sequence_length: 60
+  horizon: 1
+  splits:
+    train_end: "2021-12-31"
+    validation_end: "2023-12-31"
+
+sector_aggregation:
+  method: equal_weighted
+
+features:
+  event_types:
+    - ai_investment
+    - rates_up
+    - rates_down
+    - yen_weakness
+    - yen_strength
+    - semiconductor_shortage
+    - entertainment_hit
+    - recession
+    - market_shock
+
+model:
+  hidden_size: 128
+  num_layers: 1
+  dropout: 0.0
+  bidirectional: false
+  factor_mode: true
+  mu_scale: 0.002
+  factor_return_scales: [0.006, 0.003, 0.002]
+  max_sigma: 0.04
+
+training:
+  seed: 42
+  epochs: 50
+  batch_size: 64
+  learning_rate: 0.001
+  weight_decay: 0.00001
+  patience: 10
+  volatility_loss_weight: 0.1
+  mean_loss_weight: 0.25
+  device: auto
+
+generation:
+  volatility_scale: 1.0
+  return_clipping_percentile: [0.5, 99.5]
+  hard_clip: false
+  return_soft_clip: 0.08
+  feature_z_clip: 6.0
+  volatility_persistence: 0.9
+  volatility_shock_scale: 0.18
+  initial_price: 100.0
+
+evaluation:
+  horizon: 120
+  real_windows: 100
+  seeds: 100
+  seed: 123
+
+fetch:
+  retries: 3
+  timeout_seconds: 30
+  batch_size: 50

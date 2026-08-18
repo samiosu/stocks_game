@@ -1,0 +1,34 @@
+ticker,company_name,sector_id,sector_name,yahoo_sector,exchange,security_type,listing_date,delisted_from,delisted_to,continuous_listing_verified,shares_outstanding,market_cap_jpy,market_cap_as_of,market_cap_retrieved_at,foreign_company,is_fund,is_reit,is_preferred,is_infrastructure_fund
+1605,INPEX,energy,エネルギー,,TSE,common stock,2006-04-03,,,true,,,2026-08-18,,false,false,false,false,false
+5020,ENEOS Holdings,energy,エネルギー,,TSE,common stock,2010-04-01,,,true,,,2026-08-18,,false,false,false,false,false
+5019,Idemitsu Kosan,energy,エネルギー,,TSE,common stock,2006-10-24,,,true,,,2026-08-18,,false,false,false,false,false
+4063,Shin-Etsu Chemical,materials,素材,,TSE,common stock,1949-05-16,,,true,,,2026-08-18,,false,false,false,false,false
+5201,AGC,materials,素材,,TSE,common stock,1950-06-01,,,true,,,2026-08-18,,false,false,false,false,false
+5401,Nippon Steel,materials,素材,,TSE,common stock,1950-10-02,,,true,,,2026-08-18,,false,false,false,false,false
+7011,Mitsubishi Heavy Industries,industrials,資本財・サービス,,TSE,common stock,1950-05-01,,,true,,,2026-08-18,,false,false,false,false,false
+6501,Hitachi,industrials,資本財・サービス,,TSE,common stock,1949-05-16,,,true,,,2026-08-18,,false,false,false,false,false
+6301,Komatsu,industrials,資本財・サービス,,TSE,common stock,1949-05-16,,,true,,,2026-08-18,,false,false,false,false,false
+7203,Toyota Motor,consumer_discretionary,一般消費財・サービス,,TSE,common stock,1949-05-16,,,true,,,2026-08-18,,false,false,false,false,false
+6758,Sony Group,consumer_discretionary,一般消費財・サービス,,TSE,common stock,1958-12-01,,,true,,,2026-08-18,,false,false,false,false,false
+9983,Fast Retailing,consumer_discretionary,一般消費財・サービス,,TSE,common stock,1994-07-14,,,true,,,2026-08-18,,false,false,false,false,false
+2914,Japan Tobacco,consumer_staples,生活必需品,,TSE,common stock,1994-10-27,,,true,,,2026-08-18,,false,false,false,false,false
+4452,Kao,consumer_staples,生活必需品,,TSE,common stock,1949-05-16,,,true,,,2026-08-18,,false,false,false,false,false
+2502,Asahi Group Holdings,consumer_staples,生活必需品,,TSE,common stock,1949-05-16,,,true,,,2026-08-18,,false,false,false,false,false
+4502,Takeda Pharmaceutical,health_care,ヘルスケア,,TSE,common stock,1949-05-16,,,true,,,2026-08-18,,false,false,false,false,false
+4568,Daiichi Sankyo,health_care,ヘルスケア,,TSE,common stock,1949-05-16,,,true,,,2026-08-18,,false,false,false,false,false
+4503,Astellas Pharma,health_care,ヘルスケア,,TSE,common stock,2005-12-02,,,true,,,2026-08-18,,false,false,false,false,false
+8306,Mitsubishi UFJ Financial Group,financials,金融,,TSE,common stock,2001-04-02,,,true,,,2026-08-18,,false,false,false,false,false
+8316,Sumitomo Mitsui Financial Group,financials,金融,,TSE,common stock,2002-12-01,,,true,,,2026-08-18,,false,false,false,false,false
+8411,Mizuho Financial Group,financials,金融,,TSE,common stock,2003-03-01,,,true,,,2026-08-18,,false,false,false,false,false
+8035,Tokyo Electron,information_technology,情報技術,,TSE,common stock,1980-06-01,,,true,,,2026-08-18,,false,false,false,false,false
+6857,Advantest,information_technology,情報技術,,TSE,common stock,1983-09-01,,,true,,,2026-08-18,,false,false,false,false,false
+6702,Fujitsu,information_technology,情報技術,,TSE,common stock,1954-10-01,,,true,,,2026-08-18,,false,false,false,false,false
+9432,Nippon Telegraph and Telephone,communication_services,コミュニケーション・サービス,,TSE,common stock,1987-02-09,,,true,,,2026-08-18,,false,false,false,false,false
+9433,KDDI,communication_services,コミュニケーション・サービス,,TSE,common stock,1993-06-01,,,true,,,2026-08-18,,false,false,false,false,false
+9984,SoftBank Group,communication_services,コミュニケーション・サービス,,TSE,common stock,1994-07-01,,,true,,,2026-08-18,,false,false,false,false,false
+9501,Tokyo Electric Power Company Holdings,utilities,公益事業,,TSE,common stock,1951-08-01,,,true,,,2026-08-18,,false,false,false,false,false
+9502,Chubu Electric Power,utilities,公益事業,,TSE,common stock,1951-05-01,,,true,,,2026-08-18,,false,false,false,false,false
+9503,Kansai Electric Power,utilities,公益事業,,TSE,common stock,1951-05-01,,,true,,,2026-08-18,,false,false,false,false,false
+8801,Mitsui Fudosan,real_estate,不動産,,TSE,common stock,1949-05-16,,,true,,,2026-08-18,,false,false,false,false,false
+8802,Mitsubishi Estate,real_estate,不動産,,TSE,common stock,1953-05-01,,,true,,,2026-08-18,,false,false,false,false,false
+8830,Sumitomo Realty and Development,real_estate,不動産,,TSE,common stock,1973-06-01,,,true,,,2026-08-18,,false,false,false,false,false
