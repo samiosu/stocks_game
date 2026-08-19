@@ -1,6 +1,8 @@
 import numpy as np
+import pandas as pd
+import pytest
 
-from stock_sim.generate import event_vector, prices_from_returns
+from stock_sim.generate import event_vector, ohlc_frame, prices_from_returns, save_candlestick_chart
 
 
 def test_price_generation_is_finite_and_seed_independent_for_deterministic_returns():
@@ -32,6 +34,33 @@ def test_negative_returns_are_compounded_as_log_returns():
     expected = 100.0 * np.exp(-np.arange(1, 121) * 0.01)
     np.testing.assert_allclose(prices[:, 0], expected)
     np.testing.assert_allclose(prices[-1], 100.0 * np.exp(-1.2))
+
+
+def test_ohlc_invariants_and_close_alignment():
+    returns = np.full((30, 11), 0.002)
+    closes = prices_from_returns(returns, initial_price=100)
+    frame = ohlc_frame(pd.bdate_range("2026-01-01", periods=30), returns, closes, seed=9)
+
+    for sector_id in frame.columns[1:12]:
+        open_values = frame[f"{sector_id}__open"].to_numpy()
+        high_values = frame[f"{sector_id}__high"].to_numpy()
+        low_values = frame[f"{sector_id}__low"].to_numpy()
+        close_values = frame[f"{sector_id}__close"].to_numpy()
+        np.testing.assert_allclose(frame[sector_id].to_numpy(), close_values)
+        assert np.isfinite(np.column_stack([open_values, high_values, low_values, close_values])).all()
+        assert (high_values >= np.maximum(open_values, close_values)).all()
+        assert (low_values <= np.minimum(open_values, close_values)).all()
+        assert (low_values > 0).all()
+
+
+def test_mplfinance_saves_generated_candlestick_image(tmp_path):
+    pytest.importorskip("mplfinance")
+    returns = np.full((20, 11), 0.001)
+    closes = prices_from_returns(returns, initial_price=100)
+    frame = ohlc_frame(pd.bdate_range("2026-01-01", periods=20), returns, closes, seed=12)
+    output = save_candlestick_chart(frame, tmp_path / "generated_candlestick.png", sector_id="energy")
+    assert output.exists()
+    assert output.stat().st_size > 0
 
 
 def test_event_vector_encodes_decay_and_affected_sector():

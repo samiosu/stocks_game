@@ -4,7 +4,7 @@
 
 ## 1. まず理解しておくこと
 
-このONNXモデルは「次の値段」を直接出力しません。
+このONNXモデルは「次の値段」やOHLCを直接出力しません。
 
 ```text
 入力: 過去60営業日の特徴量
@@ -13,6 +13,8 @@
 価格: Unity側で exp(log return) を使って更新
 ```
 
+ONNXが出すのはclose-to-close対数リターンの分布パラメータです。OHLCは、そのリターンからUnityまたはPython側の後処理で生成します。
+
 モデルの出力は次の意味です。
 
 ```text
@@ -20,7 +22,10 @@ mu        = 次の対数リターンの平均
 log_sigma = 次の対数リターンの標準偏差を表すモデル出力
 sigma     = softplus(log_sigma) + 1e-5
 return    = mu + sigma * N(0, 1)
-price     = previous_price * exp(return)
+close     = previous_close * exp(return)
+open      = previous_close * exp(overnight_gap)
+high      = max(open, close) * exp(upper_wick)
+low       = min(open, close) * exp(-lower_wick)
 ```
 
 したがって、ONNXを読み込むだけでは株価チャートは生成されません。Unity側で、入力特徴量の作成、標準化、乱数サンプリング、価格更新を実装する必要があります。
@@ -34,6 +39,7 @@ Python側で学習・出力した次のファイルをUnityプロジェクトへ
 | `models/gru_model.onnx` | Unityで実行するニューラルネットワーク |
 | `models/gru_model.metadata.json` | scaler、特徴量順、factor loading、seed、生成式をまとめたUnity用メタデータ |
 | `data/processed/feature_schema.json` | 215個の特徴量の順序 |
+| `data/generated/generated_ohlc.parquet` | Python側で生成した11セクターのOHLCデータ |
 | `models/feature_scaler.pkl` | 学習データでfitした標準化パラメータ。Unity用JSONへ変換する |
 | `data/processed/sector_data.parquet` | 初期60営業日の特徴量を作る元データ。UnityへはJSON等へ変換する |
 
@@ -439,6 +445,20 @@ public sealed class StockMarketOnnxRunner : MonoBehaviour
 
 Sentisでは、モデルをロードして `Worker` を作り、`Schedule` で推論を実行します。`PeekOutput`の戻り値はWorkerが所有するため、上のコードでは出力Tensorを個別にDisposeしていません。一方、入力Tensorはこのコードで作成したものなので、読み出し後にDisposeしています。
 
+### OHLCの保存形式
+
+Pythonで生成した `data/generated/generated_prices.parquet` には、従来互換のclose列に加えて、次の列がセクターごとに保存されます。
+
+```text
+energy                    # close互換の別名
+energy__open
+energy__high
+energy__low
+energy__close
+```
+
+全セクターのOHLCだけが必要な場合は `data/generated/generated_ohlc.parquet` を使用してください。Unityで同じ処理を行う場合も、ONNX出力からcloseを更新した後、始値ギャップと上下ヒゲを生成し、`high >= max(open, close)`、`low <= min(open, close)`を必ず検査してください。
+
 ## 8. JSONから初期ウィンドウを読む
 
 `initial_feature_window.json` を `TextAsset` として読み込む場合の例です。
@@ -473,7 +493,9 @@ public sealed class InitialFeatureWindow
     ↓
 共通factor noiseとセクター固有noiseをloadingsで合成
     ↓
-価格を price *= exp(return) で更新
+closeを close *= exp(return) で更新
+    ↓
+open / high / lowを生成してOHLCバーを完成
     ↓
 生成したリターンから次の特徴量行を作る
     ↓
@@ -561,7 +583,7 @@ ONNXは同じ入力に対して同じ `mu` / `log_sigma` を返します。確�
 
 - `sigma = softplus(log_sigma) + 1e-5` を使っているか
 - `return` を価格として直接加算していないか
-- `price *= exp(return)` になっているか
+- `close *= exp(return)` になっているか
 - 通常は連続soft clipだけを使い、`hardClip`を不用意に有効化していないか
 - `volatilityScale` を大きくしすぎていないか
 

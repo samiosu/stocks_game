@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-reports = ["matplotlib>=3.7"]
+reports = ["matplotlib>=3.7", "mplfinance>=0.12.10b0"]
 onnx = ["onnx>=1.15", "onnxruntime>=1.16"]
 dev = ["pytest>=7.4", "ruff>=0.5"]
 
@@ -32,4 +32,3 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
-

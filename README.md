@@ -57,7 +57,7 @@ Yahoo Financeで `^TPX` の履歴が欠損する場合は、設定済みの `130
 
 ## 生成とUnity
 
-生成にはseed、日数、初期価格、イベントスケジュール、ボラティリティ倍率、連続soft clipを指定できます。百分位hard clipは必要な場合だけ明示的に有効化します。同じseed・同じチェックポイント・同じ入力履歴なら同じ系列を再現します。結果は `data/generated/generated_prices.parquet`、raw sampled returnsは `reports/raw_generated_returns.csv`、評価HTML・PNG・seed別CSVは `reports/` 以下です。
+生成にはseed、日数、初期価格、イベントスケジュール、ボラティリティ倍率、連続soft clipを指定できます。百分位hard clipは必要な場合だけ明示的に有効化します。同じseed・同じチェックポイント・同じ入力履歴なら同じ系列を再現します。close系列から始値ギャップと日中レンジを連続乱数で生成し、OHLC制約を満たすローソク足を作ります。結果は `data/generated/generated_prices.parquet`（close互換列＋OHLC列）、`data/generated/generated_ohlc.parquet`（OHLC専用）、raw sampled returnsは `reports/raw_generated_returns.csv`、ローソク足画像は `reports/figures/generated_candlestick.png` に保存されます。
 
 `export_onnx` は `models/gru_model.onnx` と `models/gru_model.metadata.json` を作成します。Unity Sentis/Inference Engineでは、float32の `[1, 60, feature_size]` を `features` 入力へ渡し、`params` 出力 `[1, 11, 2]` の最後の次元をmu/log_sigmaとして利用します。ONNXはモデルの推論部だけを含み、特徴量計算・スケーリング・イベントベクトル生成・乱数サンプリングはPythonまたはUnity側で同じ仕様を実装してください。特徴量の順序、scaler、factor loading、生成設定はmetadata JSONに保存されます。
 
