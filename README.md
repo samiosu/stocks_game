@@ -63,6 +63,8 @@ Yahoo Financeで `^TPX` の履歴が欠損する場合は、設定済みの `130
 
 Unityへの導入手順、Unity用メタデータの作成、C#実装例、複数日生成の注意点は [Unity統合マニュアル](docs/UNITY_INTEGRATION.md) を参照してください。
 
+Pythonファイルの役割を学習用にまとめた説明は、[`src/stock_sim/README.md`](src/stock_sim/README.md)と[`tests/README.md`](tests/README.md)を参照してください。ディレクトリごとに、含まれるPythonファイルを一覧化しています。
+
 ## テスト
 
 ```bash
