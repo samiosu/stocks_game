@@ -74,7 +74,7 @@ class OHLCVWindowDataset:
             target = target[None, :]
         target = target.reshape(-1, self.sector_count, self.field_count)
         if teacher is None:
-            teacher = np.empty((target.shape[0], self.sector_count * self.field_count), dtype=np.float32)
+            raise ValueError("OHLCV dataset requires future raw features")
         elif teacher.ndim == 1:
             teacher = teacher[None, :]
         try:
@@ -206,13 +206,15 @@ def make_ohlcv_window_arrays(
     target_scaler: FeatureScaler | None = None,
     forecast_steps: int = 1,
     volume_lookback: int = 20,
+    volume_anchor: np.ndarray | None = None,
+    volume_anchor_strength: float = 0.1,
 ) -> OHLCVWindowArrays:
     """Build OHLCV history windows and relative future targets.
 
     The target representation is gap, candle body, upper/lower wick, and log
     volume ratio relative to the trailing geometric-mean volume. ``forecast_steps``
-    enables a teacher-forced multi-day rollout loss while preserving the
-    one-step API when it is set to one.
+    supplies multi-day targets; the trainer feeds reconstructed predictions
+    back into its next window. Future observations are retained for inspection.
     """
 
     if horizon != 1:
@@ -253,6 +255,9 @@ def make_ohlcv_window_arrays(
             ],
             axis=0,
         )
+        if volume_anchor is not None:
+            volume_references = np.exp((1-volume_anchor_strength)*np.log(volume_references)
+                                       + volume_anchor_strength*np.log(volume_anchor))
         relative_targets = bars_to_relative(
             raw_values[target_indices],
             raw_values[previous_indices],
@@ -299,6 +304,8 @@ def make_ohlcv_split_datasets(
     target_scaler: FeatureScaler | None = None,
     forecast_steps: int = 1,
     volume_lookback: int = 20,
+    volume_anchor: np.ndarray | None = None,
+    volume_anchor_strength: float = 0.1,
     train_end: str = "2021-12-31",
     validation_end: str = "2023-12-31",
 ) -> dict[str, OHLCVWindowDataset]:
@@ -311,8 +318,15 @@ def make_ohlcv_split_datasets(
         target_scaler=target_scaler,
         forecast_steps=forecast_steps,
         volume_lookback=volume_lookback,
+        volume_anchor=volume_anchor,
+        volume_anchor_strength=volume_anchor_strength,
     )
     masks = chronological_masks(arrays.target_dates, train_end=train_end, validation_end=validation_end)
+    # Every target in a multi-day window must belong to the same split.
+    all_dates = pd.to_datetime(frame["date"]).sort_values().to_numpy()
+    first_dates = all_dates[np.searchsorted(all_dates, arrays.target_dates) - forecast_steps + 1]
+    masks["validation"] = masks["validation"] & (first_dates > np.datetime64(train_end))
+    masks["test"] = masks["test"] & (first_dates > np.datetime64(validation_end))
     result: dict[str, OHLCVWindowDataset] = {}
     for name, mask in masks.items():
         split = OHLCVWindowArrays(

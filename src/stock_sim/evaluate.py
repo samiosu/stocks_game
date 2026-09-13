@@ -131,18 +131,20 @@ def _off_diagonal_mean(matrix: np.ndarray) -> float:
 
 
 def _real_returns(sector_data: pd.DataFrame, schema_path: str | Path | None = None) -> tuple[pd.DataFrame, np.ndarray]:
-    if schema_path is not None and Path(schema_path).exists():
-        import json
-
-        with Path(schema_path).open("r", encoding="utf-8") as handle:
-            schema = json.load(handle)
-        return_columns = schema["return_columns"]
-    else:
-        return_columns = [f"{sector_id}__return_1d" for sector_id in SECTOR_IDS]
-    values = sector_data[return_columns].to_numpy(dtype=float)
-    if not np.isfinite(values).all():
-        raise ValueError("Real sector returns contain NaN or infinite values")
+    closes = sector_data[[f"{sector_id}__close" for sector_id in SECTOR_IDS]].to_numpy(dtype=float)
+    if not np.isfinite(closes).all() or (closes <= 0).any():
+        raise ValueError("Real OHLCV closes must be finite and positive")
+    # Keep positional/date alignment. The first row has no preceding close
+    # and is excluded by every evaluation window's history requirement.
+    values = np.zeros_like(closes)
+    values[1:] = np.diff(np.log(closes), axis=0)
     return sector_data, values
+
+
+def heldout_starts(frame, sequence_length, horizon, validation_end):
+    starts = np.arange(max(1, sequence_length), len(frame) - horizon + 1)
+    dates = pd.to_datetime(frame["date"]).to_numpy()
+    return starts[dates[starts] > np.datetime64(validation_end)]
 
 
 def _save_figures(
@@ -351,9 +353,9 @@ def evaluate_scenarios(
     model, checkpoint = _load_checkpoint(config_path(config, "checkpoint"), device)
     scaler = FeatureScaler.load(config_path(config, "scaler"))
     sequence_length = int(checkpoint.get("sequence_length", config.get("data", {}).get("sequence_length", 60)))
-    valid_starts = np.arange(sequence_length, len(real_returns) - horizon + 1)
+    valid_starts = heldout_starts(real_frame, sequence_length, horizon, checkpoint["validation_end"])
     if len(valid_starts) == 0:
-        raise ValueError("Not enough historical rows for the requested evaluation windows")
+        raise ValueError("Not enough held-out test rows for the requested evaluation windows")
     base_seed = int(evaluation_config.get("seed", config.get("training", {}).get("seed", 42)))
     rng = np.random.default_rng(base_seed)
     starts = rng.choice(valid_starts, size=max(real_window_count, generated_seed_count), replace=len(valid_starts) < max(real_window_count, generated_seed_count))
@@ -362,7 +364,8 @@ def evaluate_scenarios(
     generation_config = config.get("generation", {})
     report_path = config_path(config, "evaluation_report")
     output_dir = report_path.parent
-    raw_path = output_dir / "raw_generated_returns.csv"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    raw_path = output_dir / "evaluation_generated_returns.csv"
     generated_runs: list[np.ndarray] = []
     for scenario_id in range(generated_seed_count):
         start = int(starts[scenario_id % len(starts)])
@@ -373,6 +376,9 @@ def evaluate_scenarios(
             checkpoint,
             days=horizon,
             seed=base_seed + scenario_id,
+            stochastic_scale=generation_config.get("stochastic_scale"),
+            volume_stochastic_scale=generation_config.get("volume_stochastic_scale"),
+            relative_clip=generation_config.get("relative_clip"),
             initial_price=100.0,
             volatility_scale=float(generation_config.get("volatility_scale", 1.0)),
             training_frame=real_frame,
@@ -389,6 +395,10 @@ def evaluate_scenarios(
         generated_runs.append(generated_returns)
 
     real_run_metrics = _metrics_for_runs(real_runs, "real_window")
+    pd.DataFrame({"scenario_id": np.arange(len(starts)),
+                  "start_date": real_frame.iloc[starts]["date"].to_numpy(),
+                  "end_date": real_frame.iloc[starts + horizon - 1]["date"].to_numpy()}).to_csv(
+                      output_dir / "evaluation_windows.csv", index=False)
     generated_run_metrics = _metrics_for_runs(generated_runs, "generated_seed")
     run_metrics = pd.concat([real_run_metrics, generated_run_metrics], ignore_index=True)
     run_metrics.to_csv(output_dir / "window_metrics.csv", index=False)

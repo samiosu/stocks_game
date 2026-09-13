@@ -40,6 +40,8 @@ if nn is not None:
             dropout: float = 0.0,
             bidirectional: bool = False,
             sector_count: int = SECTOR_COUNT,
+            input_mean: list[float] | None = None,
+            input_scale: list[float] | None = None,
         ) -> None:
             super().__init__()
             if bidirectional:
@@ -53,6 +55,12 @@ if nn is not None:
             self.num_layers = int(num_layers)
             self.sector_count = int(sector_count)
             self.ohlcv_features = int(ohlcv_features)
+            self.normalize_window = input_mean is not None
+            if self.normalize_window:
+                if input_scale is None or len(input_mean) != feature_size or len(input_scale) != feature_size:
+                    raise ValueError("Input scaler must match feature_size")
+                self.register_buffer("input_mean", torch.tensor(input_mean, dtype=torch.float32))
+                self.register_buffer("input_scale", torch.tensor(input_scale, dtype=torch.float32))
             expected_output_size = self.sector_count * self.ohlcv_features
             self.output_size = expected_output_size if output_size is None else int(output_size)
             if self.output_size != expected_output_size:
@@ -72,6 +80,14 @@ if nn is not None:
         def forward(self, x: torch.Tensor) -> torch.Tensor:
             if x.ndim != 3 or x.shape[-1] != self.feature_size:
                 raise ValueError(f"Expected [batch, sequence, {self.feature_size}], got {tuple(x.shape)}")
+            if self.normalize_window:
+                raw = (x * self.input_scale + self.input_mean).reshape(x.shape[0], x.shape[1], self.sector_count, 5)
+                raw = raw.clamp_min(1e-6)
+                # Remove absolute price/volume level, preserving within-window moves.
+                price = torch.log(raw[..., :4] / raw[:, -1:, :, 3:4]) / 0.1
+                log_volume = torch.log(raw[..., 4:5])
+                volume = log_volume - log_volume[:, -20:, :, :].mean(dim=1, keepdim=True)
+                x = torch.cat([price, volume], dim=-1).flatten(2).clamp(-6.0, 6.0)
             output, _ = self.lstm(x)
             hidden = output[:, -1, :]
             return self.ohlcv_head(hidden).reshape(-1, self.sector_count, self.ohlcv_features)

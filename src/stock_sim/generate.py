@@ -19,13 +19,34 @@ from .io import read_parquet, write_parquet
 from .model import MarketLSTM, require_torch
 from .ohlcv import (
     RELATIVE_OHLCV_FIELDS,
-    geometric_volume_reference,
     relative_column_names,
-    relative_to_bars,
 )
 from .preprocessing import FeatureScaler
 
 LOGGER = logging.getLogger(__name__)
+
+
+def sample_residual_path(checkpoint, days, seed, stochastic_scale, volume_stochastic_scale):
+    """Sample consecutive whole-market residual days, preserving dependencies."""
+    rng = np.random.default_rng(int(seed))
+    bank = np.asarray(checkpoint.get("residual_bank", []), dtype=np.float64)
+    if bank.size:
+        if bank.ndim != 3 or bank.shape[1:] != (11, 5) or not np.isfinite(bank).all():
+            raise ValueError("Invalid residual bank; expected finite [days, 11, 5]")
+        block = int(checkpoint.get("generation_config", {}).get("residual_block_length", 5))
+        if block < 1:
+            raise ValueError("residual_block_length must be positive")
+        starts = rng.integers(len(bank), size=(days + block - 1) // block)
+        indices = ((starts[:, None] + np.arange(block)) % len(bank)).ravel()[:days]
+        noise = bank[indices].copy()
+    else:
+        scales = np.asarray(checkpoint["relative_noise_scale"], dtype=float)
+        if scales.shape != (5,) or not np.isfinite(scales).all() or (scales < 0).any():
+            raise ValueError("Invalid residual noise scales")
+        noise = rng.normal(size=(days, 11, 5)) * scales
+    noise *= stochastic_scale
+    noise[..., 4] *= volume_stochastic_scale
+    return noise
 
 OHLC_FIELDS = ("open", "high", "low", "close")
 
@@ -528,9 +549,15 @@ def generate_price_paths(
     noise_multiplier = np.ones(len(RELATIVE_OHLCV_FIELDS), dtype=np.float64)
     noise_multiplier[-1] = float(volume_stochastic_scale)
     effective_noise_scale = noise_scale * float(stochastic_scale) * noise_multiplier
-    rng = np.random.default_rng(int(seed))
     device = next(model.parameters()).device
     model.eval()
+    from .inference import OHLCVInference
+    inference = OHLCVInference(model, scaler, target_scaler, volume_lookback,
+                              relative_clip, feature_z_clip,
+                              volume_anchor=checkpoint.get("volume_anchor"),
+                              volume_anchor_strength=generation_config.get("volume_anchor_strength", .1),
+                              volume_daily_limit=generation_config.get("volume_daily_limit",3.)).to(device).eval()
+    residual_path = sample_residual_path(checkpoint, days, seed, stochastic_scale, volume_stochastic_scale)
     raw_window = history.tail(sequence_length)[["date", *ohlcv_columns]].copy()
     generated_bars: list[np.ndarray] = []
     generated_returns: list[np.ndarray] = []
@@ -539,11 +566,9 @@ def generate_price_paths(
         next_date = pd.bdate_range(raw_window["date"].iloc[-1] + pd.Timedelta(days=1), periods=1)[0].normalize()
         model_input = scaler.transform(raw_window[ohlcv_columns])
         values = np.asarray(model_input[ohlcv_columns], dtype=np.float32)[None, :, :]
-        if feature_z_clip is not None:
-            values = np.clip(values, -float(feature_z_clip), float(feature_z_clip))
         x = torch.from_numpy(values).to(device)
         with torch.no_grad():
-            prediction = model(x)
+            prediction = inference.predict_relative(x)
             if tuple(prediction.shape) != (1, len(SECTOR_IDS), len(OHLCV_FIELDS)):
                 raise ValueError(
                     "OHLCV model output must have shape "
@@ -556,28 +581,13 @@ def generate_price_paths(
                     float(prediction.max()),
                     np.round(effective_noise_scale, 4).tolist(),
                 )
-        standardized_relative = prediction[0].detach().cpu().numpy().astype(np.float64)
-        standardized_relative += rng.normal(
-            loc=0.0,
-            scale=effective_noise_scale[None, :],
-            size=standardized_relative.shape,
-        )
-        relative = target_scaler.inverse_transform(standardized_relative.reshape(1, -1)).reshape(
-            len(SECTOR_IDS), len(RELATIVE_OHLCV_FIELDS)
-        )
+            residual = torch.as_tensor(residual_path[step:step+1], dtype=x.dtype, device=device)
+            raw_bar = inference.reconstruct(x, prediction + residual)[0].cpu().numpy().astype(float)
         previous = raw_window.iloc[-1][ohlcv_columns].to_numpy(dtype=float).reshape(
             len(SECTOR_IDS), len(OHLCV_FIELDS)
         )
-        window_bars = raw_window[ohlcv_columns].to_numpy(dtype=float).reshape(
-            -1, len(SECTOR_IDS), len(OHLCV_FIELDS)
-        )
-        volume_reference = geometric_volume_reference(window_bars, volume_lookback)
-        raw_bar = relative_to_bars(
-            relative,
-            previous,
-            volume_reference=volume_reference,
-            relative_clip=relative_clip,
-        )
+        if not np.isfinite(raw_bar).all() or (raw_bar <= 0).any():
+            raise FloatingPointError("OHLCV reconstruction produced invalid values")
         close_index = OHLCV_FIELDS.index("close")
         returns = np.log(raw_bar[:, close_index] / previous[:, close_index])
         if not np.isfinite(returns).all():

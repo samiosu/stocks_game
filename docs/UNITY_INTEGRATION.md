@@ -16,7 +16,8 @@ python -m stock_sim.export_onnx --config config/config.yaml
 
 | ファイル | 用途 |
 |---|---|
-| `models/lstm_model.onnx` | Unity Inference Engine/Sentisで実行するLSTM |
+| `models/lstm_model.onnx` | ノイズなしのOHLCV推論 |
+| `models/lstm_model.stochastic.onnx` | `residual [1,11,5]` を追加で受け取る確率的生成用モデル |
 | `models/lstm_model.metadata.json` | 入出力名、列順、scaler、OHLCV仕様 |
 | `data/processed/initial_ohlcv_window.json` | 初回推論用の過去60行 |
 | `data/generated/generated_ohlcv.parquet` | Python側で生成したOHLCVの確認用 |
@@ -57,7 +58,8 @@ open = previousClose * exp(gap)
 close = open * exp(body)
 high = max(open, close) * exp(upperWick)
 low = min(open, close) * exp(-lowerWick)
-volume = trailing20dGeometricMeanVolume * exp(logVolumeRatio)
+volumeReference = exp(0.9 * log(trailing20dGeometricMeanVolume) + 0.1 * log(trainingVolumeAnchor))
+volume = clamp(volumeReference * exp(logVolumeRatio), previousVolume / 3, previousVolume * 3)
 ```
 
 出力は`open`・`close`・`volume`が正値で、`high >= max(open, close)`、`low <= min(open, close)`となるようグラフ内で制約されます。
@@ -134,7 +136,7 @@ public sealed class StockMarketOnnxRunner : MonoBehaviour
         metadata = JsonUtility.FromJson<Metadata>(metadataJson.text);
         if (metadata.sequenceLength != 60 || metadata.featureSize != SectorCount * FieldCount)
             throw new InvalidOperationException("Expected OHLCV input shape [1, 60, 55].");
-        if (metadata.mean.Length != metadata.featureSize || metadata.scale.Length != metadata.featureSize)
+        if (metadata.scaler == null || metadata.scaler.mean.Length != metadata.featureSize || metadata.scaler.scale.Length != metadata.featureSize)
             throw new InvalidOperationException("Invalid OHLCV scaler length.");
 
         worker = new Worker(ModelLoader.Load(modelAsset), backend);
@@ -194,7 +196,9 @@ LSTM: [1, 60, 55] → [1, 11, 5]
 再び推論
 ```
 
-入力にはイベント特徴量やリターン特徴量を追加しません。モデルの入力は55個のOHLCV列だけです。Python生成では検証残差ノイズを加えますが、ONNX/Unity推論は決定的です。旧モデルの`mu`、`log_sigma`、factor noiseは使用しません。
+標準化した外部入力を事前に±6へクリップしないでください。新モデルは内部で終値・直近出来高に対する相対値へ変換し、その後で制限します。上記C#例はノイズなしのモデル用です。
+
+Pythonと同じ確率的生成には `lstm_model.stochastic.onnx` を使います。metadataの `residualBank [N,11,5]` から開始日を選び、市場全体の残差を5日続けて読み出します（末尾では先頭へ折り返す）。5日後に開始日を選び直します。全項目へ `generation.stochasticScale`、出来高へさらに `generation.volumeStochasticScale` を掛けて `residual` 入力へ渡します。セクターや項目ごとに別の日を選ぶと依存関係が失われます。同じ推論結果を比較する場合、seedの値だけでなく残差の抽出インデックスもPythonと揃えてください。ONNX Runtimeでの一致はテスト済みですが、Unity Editor実機でのロード・実行確認は別途必要です。
 
 ## 7. 保存形式
 

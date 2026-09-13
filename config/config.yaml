@@ -69,8 +69,11 @@ training:
 
 generation:
   feature_z_clip: 6.0
-  stochastic_scale: 1.5
+  stochastic_scale: 1.0
+  residual_block_length: 5
   volume_stochastic_scale: 0.25
+  volume_anchor_strength: 0.1
+  volume_daily_limit: 3.0
   relative_clip: [0.12, 0.12, 0.08, 0.08, 1.0]
   generate_ohlc: true
   candlestick_sector: energy

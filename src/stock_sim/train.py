@@ -15,6 +15,7 @@ from .config import config_path, ensure_parent, load_config, seed_everything, se
 from .constants import OHLCV_FIELDS, SECTOR_IDS
 from .dataset import make_ohlcv_split_datasets
 from .io import read_parquet
+from .inference import OHLCVInference
 from .model import MarketLSTM, model_hyperparameters, ohlcv_loss, require_torch
 from .ohlcv import bars_to_relative, relative_column_names
 from .preprocessing import FeatureScaler, assert_finite
@@ -45,37 +46,42 @@ def _run_epoch(
     loader: Any,
     device,
     optimizer=None,
+    inference=None,
 ) -> float:
     training = optimizer is not None
     model.train(training)
     values: list[float] = []
-    for features, target_relative, teacher_features in loader:
+    counts: list[int] = []
+    for features, target_relative, _teacher_features in loader:
         features = features.to(device)
         target_relative = target_relative.to(device)
-        teacher_features = teacher_features.to(device)
         if training:
             optimizer.zero_grad(set_to_none=True)
-        window = features
-        predictions = []
-        for step in range(target_relative.shape[1]):
-            predictions.append(model(window))
-            if step + 1 < target_relative.shape[1]:
-                window = torch.cat(
-                    [window[:, 1:, :], teacher_features[:, step : step + 1, :]],
-                    dim=1,
-                )
-        prediction = torch.stack(predictions, dim=1)
-        loss = ohlcv_loss(prediction, target_relative)
+        with torch.set_grad_enabled(training):
+            window = features
+            predictions = []
+            for step in range(target_relative.shape[1]):
+                prediction = model(window)
+                predictions.append(prediction)
+                if step + 1 < target_relative.shape[1]:
+                    if inference is None:
+                        raise ValueError("Multi-step training requires OHLCV reconstruction")
+                    window = inference.advance(window, prediction)
+            prediction = torch.stack(predictions, dim=1)
+            loss = ohlcv_loss(prediction, target_relative)
+        if not torch.isfinite(loss):
+            raise FloatingPointError("Non-finite training/validation loss")
         if training:
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
         values.append(float(loss.detach().cpu()))
-    return float(np.mean(values)) if values else float("nan")
+        counts.append(features.shape[0])
+    return float(np.average(values, weights=counts)) if values else float("nan")
 
 
-def _estimate_noise_scale(torch, model, loader: Any, device) -> np.ndarray:
-    """Estimate standardized one-step residual noise by relative field."""
+def _estimate_residuals(torch, model, loader: Any, device) -> np.ndarray:
+    """Keep whole market-day residuals, including cross-sector dependence."""
 
     model.eval()
     residuals: list[np.ndarray] = []
@@ -84,11 +90,10 @@ def _estimate_noise_scale(torch, model, loader: Any, device) -> np.ndarray:
             prediction = model(features.to(device)).detach().cpu().numpy()
             prediction = prediction.reshape(target_relative.shape[0], -1)
             target = target_relative[:, 0].numpy().reshape(target_relative.shape[0], -1)
-            residuals.append((target - prediction).reshape(-1, len(OHLCV_FIELDS)))
+            residuals.append((target - prediction).reshape(-1, len(SECTOR_IDS), len(OHLCV_FIELDS)))
     if not residuals:
-        return np.ones(len(OHLCV_FIELDS), dtype=np.float64)
-    scale = np.std(np.concatenate(residuals, axis=0), axis=0, ddof=0)
-    return np.clip(np.nan_to_num(scale, nan=0.5, posinf=1.5, neginf=0.5), 0.15, 1.5)
+        raise ValueError("No held-out residuals available for calibration")
+    return np.concatenate(residuals, axis=0)
 
 
 def train_model(config: dict[str, Any]) -> dict[str, Any]:
@@ -119,6 +124,9 @@ def train_model(config: dict[str, Any]) -> dict[str, Any]:
     scaler = FeatureScaler(ohlcv_columns).fit(train_rows[ohlcv_columns])
     scaler.save(config_path(config, "scaler"))
     relative_columns = relative_column_names()
+    generation_config = config.get("generation", {})
+    anchor_strength = float(generation_config.get("volume_anchor_strength", .1))
+    volume_anchor = np.exp(np.log(train_rows[[f"{s}__volume" for s in SECTOR_IDS]].to_numpy()).mean(axis=0))
     raw_bars = frame[ohlcv_columns].to_numpy(dtype=np.float64).reshape(
         len(frame), len(SECTOR_IDS), len(OHLCV_FIELDS)
     )
@@ -130,6 +138,7 @@ def train_model(config: dict[str, Any]) -> dict[str, Any]:
         ],
         axis=0,
     )
+    volume_references = np.exp((1-anchor_strength)*np.log(volume_references) + anchor_strength*np.log(volume_anchor))
     relative_values = bars_to_relative(
         raw_bars[volume_lookback:],
         raw_bars[volume_lookback - 1 : -1],
@@ -158,6 +167,8 @@ def train_model(config: dict[str, Any]) -> dict[str, Any]:
         target_scaler=relative_scaler,
         forecast_steps=forecast_steps,
         volume_lookback=volume_lookback,
+        volume_anchor=volume_anchor,
+        volume_anchor_strength=anchor_strength,
         train_end=train_end,
         validation_end=validation_end,
     )
@@ -171,9 +182,14 @@ def train_model(config: dict[str, Any]) -> dict[str, Any]:
         config,
         len(ohlcv_columns),
     )
+    hyperparameters.update(input_mean=scaler.mean_.tolist(), input_scale=scaler.scale_.tolist())
     model = MarketLSTM(**hyperparameters)
     device = _device(torch, str(train_config.get("device", "auto")))
     model.to(device)
+    inference = OHLCVInference(model, scaler, relative_scaler, volume_lookback,
+                              generation_config.get("relative_clip"), volume_anchor=volume_anchor,
+                              volume_anchor_strength=anchor_strength,
+                              volume_daily_limit=generation_config.get("volume_daily_limit",3.)).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=float(train_config.get("learning_rate", 0.001)),
@@ -192,6 +208,7 @@ def train_model(config: dict[str, Any]) -> dict[str, Any]:
             train_loader,
             device,
             optimizer,
+            inference=inference,
         )
         validation_loss = (
             _run_epoch(
@@ -200,6 +217,7 @@ def train_model(config: dict[str, Any]) -> dict[str, Any]:
                 validation_loader,
                 device,
                 None,
+                inference=inference,
             )
             if validation_loader is not None
             else train_loss
@@ -219,7 +237,9 @@ def train_model(config: dict[str, Any]) -> dict[str, Any]:
         model.load_state_dict(best_state)
     model.eval()
     calibration_loader = validation_loader if validation_loader is not None else train_loader
-    relative_noise_scale = _estimate_noise_scale(torch, model, calibration_loader, device)
+    with torch.no_grad():
+        residuals = _estimate_residuals(torch, model, calibration_loader, device)
+    relative_noise_scale = residuals.std(axis=(0, 1))
 
     checkpoint = {
         "model_type": "lstm_relative_ohlcv",
@@ -233,6 +253,7 @@ def train_model(config: dict[str, Any]) -> dict[str, Any]:
         "horizon": horizon,
         "forecast_steps": forecast_steps,
         "volume_lookback": volume_lookback,
+        "volume_anchor": volume_anchor.tolist(),
         "train_end": train_end,
         "validation_end": validation_end,
         "generation_seed": seed,
@@ -244,6 +265,9 @@ def train_model(config: dict[str, Any]) -> dict[str, Any]:
             "scale": relative_scaler.scale_.tolist(),
         },
         "relative_noise_scale": relative_noise_scale.tolist(),
+        "residual_bank": residuals.tolist(),
+        "residual_calibration_period": "validation" if validation_loader is not None else "train",
+        "training_mode": "autoregressive_rollout",
     }
     checkpoint_path = config_path(config, "checkpoint")
     ensure_parent(checkpoint_path)

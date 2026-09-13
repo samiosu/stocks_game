@@ -51,7 +51,9 @@ Yahoo Financeで `^TPX` の履歴が欠損する場合は、設定済みの `130
 
 `sector_data.parquet` には従来のリターン・ボラティリティ等の分析用特徴量に加え、セクターごとの生OHLCVを保持します。LSTMの学習入力はこのうち `ohlcv_columns`（11セクター×Open/High/Low/Close/Volumeの55列）です。セクター系列はデフォルトで構成銘柄の等ウェイト平均です。`config/config.yaml` の `sector_aggregation.method` を `market_cap_weighted` にすると時価総額ウェイトへ変更できます。個別銘柄特徴量は `data/processed/stock_features.parquet` に保持します。
 
-入力系列は60営業日、LSTMの出力ヘッドは `[batch, 11, 5]`（ギャップ、実体、上下ヒゲ、直近出来高からの比率）です。学習時は生OHLCVの入力を標準化し、相対ターゲットを学習します。生成時は前バーの終値と直近20日出来高の幾何平均から生OHLCVへ再構成するため、価格水準の退行、長いヒゲ、出来高の累積暴走を抑えられます。5日間のteacher-forcing rollout lossと、検証残差に基づく確率ノイズを使い、出来高ノイズは価格より小さくします。`high >= max(open, close)`、`low <= min(open, close)`、各値の正値制約は再構成時に保証します。
+入力系列は60営業日、LSTMの出力ヘッドは `[batch, 11, 5]`（ギャップ、実体、上下ヒゲ、出来高基準量からの比率）です。外部入力を標準化した後、モデル内部でOHLCをウィンドウ末尾の終値に対する対数比、出来高を直近20日の対数平均からの差に変換します。価格水準が学習期間から離れても情報を保つための処理です。5日学習では予測から復元したOHLCVを次の入力へ戻し、勾配も通します。正解データを毎日入力するteacher forcingではありません。
+
+出来高の基準は、直近20日幾何平均90%と学習期間のセクター別幾何平均10%を対数空間で混合します。生成値だけで基準が際限なく移動することを抑え、日次出来高を前日の1/3〜3倍に制限します。価格・出来高を復元する処理は学習、Python、ONNXで共通です。
 
 モデルはUnity Sentis/Inference Engineで対応しているONNX `LSTM` 演算子を使います。GRU時代のチェックポイントはLSTMと重み形式が異なるため再利用せず、設定を更新した状態で学習とONNX出力をやり直してください。
 
@@ -59,7 +61,9 @@ Yahoo Financeで `^TPX` の履歴が欠損する場合は、設定済みの `130
 
 ## 生成とUnity
 
-生成は過去60行のOHLCVから相対値を自己回帰予測し、前バーの終値と直近20日出来高の幾何平均を基準に次のOHLCVを再構成します。Python生成はseedと検証残差ノイズを使うため、同じseedなら同じ系列を再現します。結果は `data/generated/generated_prices.parquet`（close互換列＋55個のOHLCV列）、`data/generated/generated_ohlcv.parquet`（OHLCV専用）、互換用closeリターンは `reports/raw_generated_returns.csv`、ローソク足画像は `reports/figures/generated_candlestick.png` に保存されます。
+生成ノイズは検証期間の市場全体（11セクター×5項目）の残差を5日単位で抽出します。セクター間やgap/body間の依存関係を保持し、テスト期間のデータは残差推定や調整に使いません。ノイズ倍率は1.0、出来高への倍率はその25%です。同じcheckpoint・履歴・seedで再現できます。出力は `data/generated/generated_prices.parquet`、`data/generated/generated_ohlcv.parquet`、`reports/raw_generated_returns.csv`、ローソク足は `reports/figures/generated_candlestick.png` です。
+
+評価は検証終了日より後の期間だけを使い、実データ・生成データともOHLCVの終値から対数リターンを計算します。複数日ターゲットが分割境界をまたぐ窓は除外します。評価用リターンは `reports/evaluation_generated_returns.csv` に保存し、生成結果のCSVを上書きしません。再現可能な9シナリオ＋1,000日×3seedの確認は `python -m stock_sim.audit --output reports/model_audit_after.json` で実行できます。
 
 `export_onnx` は `models/lstm_model.onnx` と `models/lstm_model.metadata.json` を作成します。Unity Sentis/Inference Engineでは、float32の標準化済み `[1, 60, 55]` を `features` 入力へ渡し、`ohlcv` 出力 `[1, 11, 5]` を `open/high/low/close/volume` の順で受け取ります。入力標準化の列順・平均・標準偏差と、内部相対表現の仕様はmetadata JSONに保存されます。
 

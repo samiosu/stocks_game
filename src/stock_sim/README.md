@@ -90,12 +90,13 @@ open = previous_close * exp(gap_log_return)
 close = open * exp(body_log_return)
 high = max(open, close) * exp(upper_wick_log_range)
 low = min(open, close) * exp(-lower_wick_log_range)
-volume = trailing_20d_geometric_mean_volume * exp(log_volume_ratio)
+volume_reference = exp(0.9 * log(trailing_20d_geometric_mean_volume) + 0.1 * log(training_volume_anchor))
+volume = clip(volume_reference * exp(log_volume_ratio), previous_volume / 3, previous_volume * 3)
 ```
 
 生成後は`High >= max(Open, Close)`、`Low <= min(Open, Close)`、Open/Close/Volumeの正値制約を確認します。
 
-ONNXには相対ヘッド、入力scalerの逆変換、前バーからのOHLCV再構成、相対値のクリップが含まれます。Unityの入力は生OHLCVをmetadataのscalerで標準化し、出力 `[1, 11, 5]` はすでに生OHLCVです。Python側の確率ノイズはONNXには含めず、Unity推論は決定的にしています。
+`inference.py`が学習rollout・Python・ONNXに共通の復元処理です。`model.py`内で入力をウィンドウ相対の対数値へ正規化します。Unityの入力はmetadataのscalerで標準化したOHLCV、出力 `[1, 11, 5]` は生OHLCVです。通常ONNXはノイズなし、追加の `lstm_model.stochastic.onnx` は明示的な `residual [1,11,5]` 入力を受け取ります。`audit.py`は固定シナリオで分布と長期挙動を記録します。
 
 ## CLI実行順
 

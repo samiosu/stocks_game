@@ -12,7 +12,8 @@ import numpy as np
 
 from .config import config_path, ensure_parent, load_config, setup_logging
 from .constants import OHLCV_FIELDS, SECTOR_IDS
-from .generate import _load_checkpoint
+from .generate import _load_checkpoint, _relative_scaler_from_checkpoint
+from .inference import OHLCVInference
 from .ohlcv import RELATIVE_OHLCV_FIELDS
 from .preprocessing import FeatureScaler
 
@@ -66,51 +67,12 @@ def export_onnx_model(
     if relative_clip.shape != (len(RELATIVE_OHLCV_FIELDS),) or (relative_clip <= 0).any():
         raise ValueError("relative_clip must contain five positive limits")
 
-    class RawOHLCVExport(torch.nn.Module):
-        """Wrap the relative head so ONNX still returns raw OHLCV bars."""
-
-        def __init__(self):
-            super().__init__()
-            self.model = model
-            self.volume_lookback = volume_lookback
-            self.register_buffer("input_mean", torch.as_tensor(scaler.mean_, dtype=torch.float32))
-            self.register_buffer("input_scale", torch.as_tensor(scaler.scale_, dtype=torch.float32))
-            self.register_buffer("target_mean", torch.as_tensor(relative_mean))
-            self.register_buffer("target_scale", torch.as_tensor(relative_scale))
-            self.register_buffer("relative_clip", torch.as_tensor(relative_clip))
-
-        def forward(self, x):
-            relative = self.model(x).reshape(x.shape[0], -1)
-            relative = relative * self.target_scale + self.target_mean
-            relative = relative.reshape(x.shape[0], len(SECTOR_IDS), len(RELATIVE_OHLCV_FIELDS))
-            raw_window = x * self.input_scale + self.input_mean
-            raw_window = raw_window.reshape(
-                x.shape[0], x.shape[1], len(SECTOR_IDS), len(OHLCV_FIELDS)
-            )
-            previous = raw_window[:, -1, :, :]
-            volume_history = raw_window[:, -self.volume_lookback :, :, 4]
-            volume_reference = torch.exp(
-                torch.mean(torch.log(torch.clamp(volume_history, min=1e-6)), dim=1)
-            )
-            relative = torch.clamp(relative, -self.relative_clip, self.relative_clip)
-            relative = torch.cat(
-                [relative[..., :2], torch.clamp(relative[..., 2:4], min=0.0), relative[..., 4:5]],
-                dim=-1,
-            )
-            previous_close = previous[..., 3]
-            open_values = previous_close * torch.exp(relative[..., 0])
-            close_values = open_values * torch.exp(relative[..., 1])
-            body_high = torch.maximum(open_values, close_values)
-            body_low = torch.minimum(open_values, close_values)
-            high_values = body_high * torch.exp(relative[..., 2])
-            low_values = body_low * torch.exp(-relative[..., 3])
-            volume_values = volume_reference * torch.exp(relative[..., 4])
-            return torch.stack(
-                [open_values, high_values, low_values, close_values, volume_values],
-                dim=-1,
-            )
-
-    export_model = RawOHLCVExport().eval()
+    export_model = OHLCVInference(model, scaler, _relative_scaler_from_checkpoint(checkpoint),
+                                 volume_lookback, relative_clip,
+                                 generation_config.get("feature_z_clip", 6.0),
+                                 volume_anchor=checkpoint.get("volume_anchor"),
+                                 volume_anchor_strength=generation_config.get("volume_anchor_strength", .1),
+                                 volume_daily_limit=generation_config.get("volume_daily_limit", 3.)).eval()
     dummy = torch.zeros((1, sequence_length, len(scaler.columns)), dtype=torch.float32)
     output = ensure_parent(output_path)
     export_kwargs = {
@@ -133,11 +95,16 @@ def export_onnx_model(
 
     graph = onnx.load(str(output))
     onnx.checker.check_model(graph)
+    # Optional explicit noise input allows Unity to reproduce Python sampling.
+    stochastic_output = output.with_name(output.stem + ".stochastic.onnx")
+    stochastic_kwargs = dict(export_kwargs, input_names=["features", "residual"])
+    torch.onnx.export(export_model, (dummy, torch.zeros(1, 11, 5)), stochastic_output, **stochastic_kwargs)
+    onnx.checker.check_model(onnx.load(str(stochastic_output)))
     metadata_output = ensure_parent(metadata_path or output.with_suffix(".metadata.json"))
     scaler_mean = np.asarray(scaler.mean_, dtype=np.float32).tolist()
     scaler_scale = np.asarray(scaler.scale_, dtype=np.float32).tolist()
     metadata = {
-        "schemaVersion": 3,
+        "schemaVersion": 4,
         "modelType": "LSTM_RELATIVE_OHLCV",
         "inputType": "OHLCV",
         "outputType": "OHLCV",
@@ -150,6 +117,7 @@ def export_onnx_model(
         },
         "sequenceLength": sequence_length,
         "volumeLookback": volume_lookback,
+        "volumeAnchor": checkpoint.get("volume_anchor"),
         "featureSize": len(scaler.columns),
         "featureColumns": list(scaler.columns),
         "ohlcvFields": list(OHLCV_FIELDS),
@@ -160,19 +128,25 @@ def export_onnx_model(
         "outputSemantics": {
             "input": "standardized raw OHLCV values in ohlcvColumns order",
             "head": "standardized gap/body/upper-wick/lower-wick/log-volume-ratio values",
-            "output": "raw next OHLCV reconstructed from the previous close and trailing geometric-mean volume",
-            "reconstruction": "open=previousClose*exp(gap); close=open*exp(body); high=max(open,close)*exp(upperWick); low=min(open,close)*exp(-lowerWick); volume=trailingGeometricMeanVolume*exp(logVolumeRatio)",
-            "postprocess": "relative clipping and non-negative wick clipping are embedded in the exported graph",
+            "output": "raw next OHLCV reconstructed using the previous close and anchored geometric-mean volume",
+            "reconstruction": "open=previousClose*exp(gap); close=open*exp(body); high=max(open,close)*exp(upperWick); low=min(open,close)*exp(-lowerWick); volumeReference=exp((1-alpha)*mean(log(recentVolume))+alpha*log(volumeAnchor)); volume=volumeReference*exp(logVolumeRatio)",
+            "postprocess": "relative clipping, non-negative wicks and daily volume limits are embedded in the graph; alpha=volumeAnchorStrength (zero for legacy checkpoints without anchors)",
         },
         "scaler": {"mean": scaler_mean, "scale": scaler_scale},
         "relativeTargetScaler": {"mean": relative_mean.tolist(), "scale": relative_scale.tolist()},
         "relativeNoiseScale": checkpoint.get("relative_noise_scale", []),
+        "residualBank": checkpoint.get("residual_bank", []),
+        "inputNormalization": "window-relative log OHLCV" if model.normalize_window else "global scaler",
+        "stochasticOnnx": {"file": stochastic_output.name, "residualInput": "residual", "residualShape": [1, 11, 5]},
         "generation": {
             "seed": checkpoint.get("generation_seed"),
             "featureZClip": generation_config.get("feature_z_clip", 6.0),
             "stochasticScale": generation_config.get("stochastic_scale", 1.5),
             "volumeStochasticScale": generation_config.get("volume_stochastic_scale", 0.25),
             "relativeClip": relative_clip.tolist(),
+            "residualBlockLength": generation_config.get("residual_block_length", 5),
+            "volumeAnchorStrength": generation_config.get("volume_anchor_strength", .1),
+            "volumeDailyLimit": generation_config.get("volume_daily_limit", 3.),
         },
     }
     metadata_output.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
