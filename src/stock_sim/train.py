@@ -1,4 +1,4 @@
-"""Train the shared probabilistic GRU with chronological splits."""
+"""Train the shared LSTM to predict the next sector OHLCV bar."""
 
 from __future__ import annotations
 
@@ -12,10 +12,10 @@ import numpy as np
 import pandas as pd
 
 from .config import config_path, ensure_parent, load_config, seed_everything, setup_logging
-from .dataset import MarketWindowDataset, make_split_datasets
-from .factors import estimate_factor_structure
+from .constants import OHLCV_FIELDS, SECTOR_IDS
+from .dataset import make_ohlcv_split_datasets
 from .io import read_parquet
-from .model import MarketGRU, model_hyperparameters, probabilistic_loss, require_torch
+from .model import MarketLSTM, model_hyperparameters, ohlcv_loss, require_torch
 from .preprocessing import FeatureScaler, assert_finite
 
 LOGGER = logging.getLogger(__name__)
@@ -32,7 +32,7 @@ def _device(torch, requested: str) -> Any:
     return torch.device(requested)
 
 
-def _loader(torch, dataset: MarketWindowDataset, batch_size: int, shuffle: bool, seed: int):
+def _loader(torch, dataset: Any, batch_size: int, shuffle: bool, seed: int):
     generator = torch.Generator()
     generator.manual_seed(seed)
     return torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, generator=generator)
@@ -41,29 +41,20 @@ def _loader(torch, dataset: MarketWindowDataset, batch_size: int, shuffle: bool,
 def _run_epoch(
     torch,
     model,
-    loader,
+    loader: Any,
     device,
     optimizer=None,
-    volatility_loss_weight=0.1,
-    mean_loss_weight=0.25,
 ) -> float:
     training = optimizer is not None
     model.train(training)
     values: list[float] = []
-    for features, target_returns, target_log_vol in loader:
+    for features, target_ohlcv in loader:
         features = features.to(device)
-        target_returns = target_returns.to(device)
-        target_log_vol = target_log_vol.to(device)
+        target_ohlcv = target_ohlcv.to(device)
         if training:
             optimizer.zero_grad(set_to_none=True)
-        params = model(features)
-        loss = probabilistic_loss(
-            params,
-            target_returns,
-            target_log_vol,
-            volatility_loss_weight=volatility_loss_weight,
-            mean_loss_weight=mean_loss_weight,
-        )
+        prediction = model(features)
+        loss = ohlcv_loss(prediction, target_ohlcv)
         if training:
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -80,10 +71,10 @@ def train_model(config: dict[str, Any]) -> dict[str, Any]:
     seed_everything(seed)
     frame = read_parquet(config_path(config, "sector_data"))
     schema = _load_schema(config_path(config, "feature_schema"))
-    feature_columns = list(schema["feature_columns"])
-    return_columns = list(schema["return_columns"])
-    volatility_columns = list(schema["volatility_columns"])
-    assert_finite(frame, feature_columns + return_columns + volatility_columns)
+    ohlcv_columns = list(schema["ohlcv_columns"])
+    if len(ohlcv_columns) != len(SECTOR_IDS) * len(OHLCV_FIELDS):
+        raise ValueError("Expected one OHLCV bar for each of the 11 sectors")
+    assert_finite(frame, ohlcv_columns)
     data_config = config.get("data", {})
     sequence_length = int(data_config.get("sequence_length", 60))
     horizon = int(data_config.get("horizon", 1))
@@ -93,11 +84,7 @@ def train_model(config: dict[str, Any]) -> dict[str, Any]:
     train_rows = frame[pd.to_datetime(frame["date"]) <= pd.Timestamp(train_end)]
     if train_rows.empty:
         raise ValueError(f"No rows in training period ending {train_end}")
-    # Factor loadings describe the game-market co-movement distribution, not a
-    # predictive signal.  Estimate them from the complete historical panel so
-    # the generated correlation target uses all available sector observations.
-    factor_metadata = estimate_factor_structure(frame[return_columns].to_numpy(dtype=float))
-    scaler = FeatureScaler(feature_columns).fit(train_rows[feature_columns])
+    scaler = FeatureScaler(ohlcv_columns).fit(train_rows[ohlcv_columns])
     scaler.save(config_path(config, "scaler"))
     LOGGER.info(
         "scaler units: feature_count=%d mean_range=[%.6f, %.6f] scale_range=[%.6f, %.6f]",
@@ -107,20 +94,12 @@ def train_model(config: dict[str, Any]) -> dict[str, Any]:
         float(scaler.scale_.min()),
         float(scaler.scale_.max()),
     )
-    train_return_values = train_rows[return_columns].to_numpy(dtype=float)
-    LOGGER.info(
-        "raw return units: mean=%.6f std=%.6f min=%.6f max=%.6f",
-        float(train_return_values.mean()),
-        float(train_return_values.std(ddof=0)),
-        float(train_return_values.min()),
-        float(train_return_values.max()),
-    )
-    datasets = make_split_datasets(
+    datasets = make_ohlcv_split_datasets(
         frame,
-        feature_columns=feature_columns,
-        return_columns=return_columns,
-        volatility_columns=volatility_columns,
+        ohlcv_columns=ohlcv_columns,
         scaler=scaler,
+        sector_count=len(SECTOR_IDS),
+        field_count=len(OHLCV_FIELDS),
         sequence_length=sequence_length,
         horizon=horizon,
         train_end=train_end,
@@ -134,11 +113,9 @@ def train_model(config: dict[str, Any]) -> dict[str, Any]:
     validation_loader = _loader(torch, datasets["validation"], batch_size, False, seed) if len(datasets["validation"]) else None
     hyperparameters = model_hyperparameters(
         config,
-        len(feature_columns),
-        factor_loadings=factor_metadata["factor_loadings"],
-        common_noise_weight=float(factor_metadata["common_noise_weight"]),
+        len(ohlcv_columns),
     )
-    model = MarketGRU(**hyperparameters)
+    model = MarketLSTM(**hyperparameters)
     device = _device(torch, str(train_config.get("device", "auto")))
     model.to(device)
     optimizer = torch.optim.AdamW(
@@ -148,8 +125,6 @@ def train_model(config: dict[str, Any]) -> dict[str, Any]:
     )
     epochs = int(train_config.get("epochs", 50))
     patience = int(train_config.get("patience", 10))
-    volatility_loss_weight = float(train_config.get("volatility_loss_weight", 0.1))
-    mean_loss_weight = float(train_config.get("mean_loss_weight", 0.25))
     best_loss = float("inf")
     best_state: dict[str, Any] | None = None
     wait = 0
@@ -161,8 +136,6 @@ def train_model(config: dict[str, Any]) -> dict[str, Any]:
             train_loader,
             device,
             optimizer,
-            volatility_loss_weight,
-            mean_loss_weight,
         )
         validation_loss = (
             _run_epoch(
@@ -171,8 +144,6 @@ def train_model(config: dict[str, Any]) -> dict[str, Any]:
                 validation_loader,
                 device,
                 None,
-                volatility_loss_weight,
-                mean_loss_weight,
             )
             if validation_loader is not None
             else train_loss
@@ -192,24 +163,18 @@ def train_model(config: dict[str, Any]) -> dict[str, Any]:
         model.load_state_dict(best_state)
     model.eval()
 
-    percentile = config.get("generation", {}).get("return_clipping_percentile", [0.5, 99.5])
-    train_returns = train_rows[return_columns].to_numpy(dtype=float)
-    return_bounds = np.percentile(train_returns, [float(percentile[0]), float(percentile[1])], axis=0).T.tolist()
     checkpoint = {
+        "model_type": "lstm_ohlcv",
+        "input_type": "ohlcv",
         "state_dict": model.state_dict(),
         "model_kwargs": hyperparameters,
-        "feature_columns": feature_columns,
-        "return_columns": return_columns,
-        "volatility_columns": volatility_columns,
+        "ohlcv_columns": ohlcv_columns,
         "sequence_length": sequence_length,
         "horizon": horizon,
-        "return_bounds": return_bounds,
-        "event_columns": list(schema.get("event_columns", [])),
         "train_end": train_end,
         "validation_end": validation_end,
         "generation_seed": seed,
         "generation_config": config.get("generation", {}),
-        "factor_metadata": factor_metadata,
         "scaler_metadata": {"columns": scaler.columns, "mean": scaler.mean_.tolist(), "scale": scaler.scale_.tolist()},
     }
     checkpoint_path = config_path(config, "checkpoint")

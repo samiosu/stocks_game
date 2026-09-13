@@ -1,4 +1,4 @@
-"""Generate stochastic sector prices from a trained GRU."""
+"""Generate sector OHLCV bars from a trained LSTM."""
 
 from __future__ import annotations
 
@@ -14,9 +14,9 @@ import numpy as np
 import pandas as pd
 
 from .config import config_path, ensure_parent, load_config, seed_everything, setup_logging
-from .constants import SECTOR_DEFINITIONS, SECTOR_IDS
+from .constants import OHLCV_FIELDS, SECTOR_DEFINITIONS, SECTOR_IDS
 from .io import read_parquet, write_parquet
-from .model import MarketGRU, require_torch, sample_returns, sigma_from_log_sigma
+from .model import MarketLSTM, require_torch
 from .preprocessing import FeatureScaler
 
 LOGGER = logging.getLogger(__name__)
@@ -146,13 +146,78 @@ def ohlc_frame(
     return result
 
 
+def ohlcv_frame(
+    dates: Iterable[Any],
+    bars: np.ndarray | Iterable[Iterable[Iterable[float]]],
+) -> pd.DataFrame:
+    """Return close aliases plus all direct model-generated OHLCV fields."""
+
+    values = np.asarray(bars, dtype=np.float64)
+    if values.ndim != 3 or values.shape[1:] != (len(SECTOR_IDS), len(OHLCV_FIELDS)):
+        raise ValueError(
+            "bars must have shape [days, 11, 5] in open/high/low/close/volume order"
+        )
+    date_values = pd.to_datetime(list(dates)).normalize()
+    if len(date_values) != values.shape[0]:
+        raise ValueError("dates must contain one value per generated day")
+    result = pd.DataFrame({"date": date_values})
+    for sector_index, sector_id in enumerate(SECTOR_IDS):
+        for field_index, field in enumerate(OHLCV_FIELDS):
+            result[f"{sector_id}__{field}"] = values[:, sector_index, field_index]
+        # Keep the historical sector-id column as a close alias for evaluation
+        # and existing Unity/data consumers.
+        result[sector_id] = values[:, sector_index, OHLCV_FIELDS.index("close")]
+    return result
+
+
+def _repair_ohlcv_bar(values: np.ndarray) -> np.ndarray:
+    """Make a predicted bar finite and enforce basic OHLCV invariants."""
+
+    bar = np.asarray(values, dtype=np.float64).copy()
+    if bar.shape != (len(SECTOR_IDS), len(OHLCV_FIELDS)):
+        raise ValueError("OHLCV prediction must have shape [11, 5]")
+    if not np.isfinite(bar).all():
+        raise FloatingPointError("Model generated a non-finite OHLCV bar")
+    open_index = OHLCV_FIELDS.index("open")
+    high_index = OHLCV_FIELDS.index("high")
+    low_index = OHLCV_FIELDS.index("low")
+    close_index = OHLCV_FIELDS.index("close")
+    volume_index = OHLCV_FIELDS.index("volume")
+    epsilon = np.finfo(np.float64).tiny
+    bar[:, [open_index, close_index, volume_index]] = np.maximum(
+        bar[:, [open_index, close_index, volume_index]], epsilon
+    )
+    bar[:, low_index] = np.maximum(bar[:, low_index], epsilon)
+    bar[:, high_index] = np.maximum(
+        bar[:, high_index], np.maximum(bar[:, open_index], bar[:, close_index])
+    )
+    bar[:, low_index] = np.minimum(
+        bar[:, low_index], np.minimum(bar[:, open_index], bar[:, close_index])
+    )
+    if not np.isfinite(bar).all() or (bar <= 0).any():
+        raise FloatingPointError("Model generated invalid OHLCV values")
+    return bar
+
+
 def extract_ohlc_frame(frame: pd.DataFrame) -> pd.DataFrame:
-    """Select only date and ``sector__open/high/low/close`` columns."""
+    """Select the legacy date and ``sector__open/high/low/close`` columns."""
 
     columns = ["date"] + [f"{sector_id}__{field}" for sector_id in SECTOR_IDS for field in OHLC_FIELDS]
     missing = [column for column in columns if column not in frame.columns]
     if missing:
         raise ValueError(f"OHLC frame is missing columns: {missing[:5]}")
+    return frame[columns].copy()
+
+
+def extract_ohlcv_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    """Select date and all direct ``sector__open/high/low/close/volume`` columns."""
+
+    columns = ["date"] + [
+        f"{sector_id}__{field}" for sector_id in SECTOR_IDS for field in OHLCV_FIELDS
+    ]
+    missing = [column for column in columns if column not in frame.columns]
+    if missing:
+        raise ValueError(f"OHLCV frame is missing columns: {missing[:5]}")
     return frame[columns].copy()
 
 
@@ -175,16 +240,24 @@ def save_candlestick_chart(
     missing = [column for column in columns.values() if column not in frame.columns]
     if "date" not in frame.columns or missing:
         raise ValueError(f"Frame does not contain OHLC columns for {sector_id}")
-    chart = frame[["date", *columns.values()]].copy()
+    volume_column = f"{sector_id}__volume"
+    has_volume = volume_column in frame.columns
+    chart_columns = ["date", *columns.values()]
+    if has_volume:
+        chart_columns.append(volume_column)
+    chart = frame[chart_columns].copy()
     chart["date"] = pd.to_datetime(chart["date"])
-    chart = chart.rename(columns={value: key.capitalize() for key, value in columns.items()}).set_index("date")
+    rename_columns = {value: key.capitalize() for key, value in columns.items()}
+    if has_volume:
+        rename_columns[volume_column] = "Volume"
+    chart = chart.rename(columns=rename_columns).set_index("date")
     output = ensure_parent(path)
     mpf.plot(
         chart,
         type="candle",
         style="yahoo",
-        volume=False,
-        title=title or f"Generated {sector_id} OHLC",
+        volume=has_volume,
+        title=title or f"Generated {sector_id} OHLCV",
         savefig={"fname": str(output), "dpi": 150, "bbox_inches": "tight"},
         closefig=True,
     )
@@ -199,7 +272,17 @@ def _load_checkpoint(path: str | Path, device: Any) -> tuple[Any, dict[str, Any]
         checkpoint = torch.load(path, map_location=device, weights_only=False)
     except TypeError:  # torch < 2.6
         checkpoint = torch.load(path, map_location=device)
-    model = MarketGRU(**checkpoint["model_kwargs"])
+    checkpoint_type = str(checkpoint.get("model_type", "")).lower()
+    if checkpoint_type != "lstm_ohlcv":
+        raise ValueError(
+            f"Checkpoint {path} contains model_type={checkpoint_type!r}; "
+            "retrain it with the LSTM OHLCV configuration"
+        )
+    if str(checkpoint.get("input_type", "")).lower() != "ohlcv":
+        raise ValueError(f"Checkpoint {path} is not an OHLCV-input model")
+    if len(checkpoint.get("ohlcv_columns", [])) != len(SECTOR_IDS) * len(OHLCV_FIELDS):
+        raise ValueError(f"Checkpoint {path} does not contain 11-sector OHLCV columns")
+    model = MarketLSTM(**checkpoint["model_kwargs"])
     model.load_state_dict(checkpoint["state_dict"])
     model.to(device)
     model.eval()
@@ -310,35 +393,6 @@ def _advance_raw_row(
     return row
 
 
-def _bounds(
-    checkpoint: dict[str, Any],
-    training_frame: pd.DataFrame,
-    return_columns: list[str],
-    percentile: tuple[float, float] | list[float] | None,
-    *,
-    hard_clip: bool,
-) -> tuple[np.ndarray, np.ndarray]:
-    if not hard_clip:
-        # The model output is sampled from a continuous distribution.  Do not
-        # silently turn it into a percentile-bounded two-point distribution.
-        return (
-            np.full(len(return_columns), -np.inf, dtype=float),
-            np.full(len(return_columns), np.inf, dtype=float),
-        )
-    if percentile is None:
-        raw = np.asarray(checkpoint.get("return_bounds", []), dtype=float)
-        if raw.shape == (len(return_columns), 2):
-            return raw[:, 0], raw[:, 1]
-    train_end = pd.Timestamp(checkpoint.get("train_end", "2021-12-31"))
-    train = training_frame[pd.to_datetime(training_frame["date"]) <= train_end]
-    values = train[return_columns].to_numpy(dtype=float)
-    quantiles = percentile or [0.5, 99.5]
-    if len(quantiles) != 2 or not (0 <= float(quantiles[0]) < float(quantiles[1]) <= 100):
-        raise ValueError("return clipping percentiles must be 0 <= low < high <= 100")
-    low, high = np.percentile(values, [float(quantiles[0]), float(quantiles[1])], axis=0)
-    return low, high
-
-
 def generate_price_paths(
     model: Any,
     history_frame: pd.DataFrame,
@@ -363,12 +417,13 @@ def generate_price_paths(
     ohlc_range_scale: float = 0.8,
     ohlc_minimum_range: float = 0.001,
 ) -> pd.DataFrame:
-    """Autoregressively sample sectors while updating relative features.
+    """Autoregressively predict the next raw OHLCV bar for every sector.
 
-    ``raw_returns_path`` stores samples before any safety transform.  Hard
-    percentile clipping is opt-in because exact clipping creates artificial
-    quantile plateaus.  The default soft clip is continuous and only affects
-    extreme outliers.
+    The model input is the last ``sequence_length`` rows of standardized raw
+    OHLCV values. The model output is also standardized OHLCV; this function
+    inverse-transforms it and appends the resulting bar to the rolling window.
+    The old return/sampling arguments remain in the signature for callers that
+    used the previous generator, but are intentionally ignored.
     """
 
     require_torch()
@@ -376,130 +431,95 @@ def generate_price_paths(
 
     if days < 1:
         raise ValueError("days must be positive")
-    if volatility_scale < 0:
-        raise ValueError("volatility_scale must be non-negative")
-    if not 0.0 <= volatility_persistence < 1.0:
-        raise ValueError("volatility_persistence must be between 0 and 1")
-    if volatility_shock_scale < 0:
-        raise ValueError("volatility_shock_scale must be non-negative")
-    feature_columns = list(checkpoint["feature_columns"])
-    return_columns = list(checkpoint["return_columns"])
-    event_columns = list(checkpoint.get("event_columns", [c for c in feature_columns if c.startswith("event__")]))
+    del (
+        seed,
+        initial_price,
+        event_schedule,
+        volatility_scale,
+        return_clipping_percentile,
+        training_frame,
+        hard_clip,
+        soft_clip,
+        volatility_persistence,
+        volatility_shock_scale,
+        ohlc_gap_ratio,
+        ohlc_range_scale,
+        ohlc_minimum_range,
+    )
+    ohlcv_columns = list(checkpoint.get("ohlcv_columns", []))
+    expected_column_count = len(SECTOR_IDS) * len(OHLCV_FIELDS)
+    if len(ohlcv_columns) != expected_column_count:
+        raise ValueError("Checkpoint must contain 11-sector OHLCV columns")
     sequence_length = int(checkpoint.get("sequence_length", 60))
     if len(history_frame) < sequence_length:
         raise ValueError(f"history_frame needs at least {sequence_length} rows")
     history = history_frame.copy().sort_values("date").reset_index(drop=True)
     history["date"] = pd.to_datetime(history["date"]).dt.normalize()
-    for column in feature_columns + return_columns:
+    missing = [column for column in ohlcv_columns if column not in history.columns]
+    if missing:
+        raise ValueError(f"history_frame missing OHLCV columns: {missing[:5]}")
+    if list(scaler.columns) != ohlcv_columns:
+        raise ValueError("OHLCV scaler columns do not match the checkpoint column order")
+    if not np.isfinite(history[ohlcv_columns].to_numpy(dtype=float)).all():
+        raise ValueError("history_frame contains non-finite OHLCV values")
+    if (history[ohlcv_columns].to_numpy(dtype=float) <= 0).any():
+        raise ValueError("history_frame contains non-positive OHLCV values")
+    if feature_z_clip is not None and feature_z_clip <= 0:
+        raise ValueError("feature_z_clip must be positive or None")
+    for column in ohlcv_columns:
         if column not in history:
             raise ValueError(f"history_frame missing {column}")
-    if training_frame is None:
-        training_frame = history_frame
-    low, high = _bounds(
-        checkpoint,
-        training_frame,
-        return_columns,
-        return_clipping_percentile,
-        hard_clip=hard_clip,
-    )
-    if low.shape != (len(SECTOR_IDS),) or high.shape != (len(SECTOR_IDS),):
-        raise ValueError("Return clipping bounds must contain one pair per sector")
-    if soft_clip is not None and soft_clip <= 0:
-        raise ValueError("soft_clip must be positive or None")
     device = next(model.parameters()).device
-    generator = torch.Generator(device=device.type)
-    generator.manual_seed(int(seed))
     model.eval()
-    raw_window = history.tail(sequence_length)[["date", *feature_columns]].copy()
+    raw_window = history.tail(sequence_length)[["date", *ohlcv_columns]].copy()
+    generated_bars: list[np.ndarray] = []
     generated_returns: list[np.ndarray] = []
-    raw_sampled_returns: list[np.ndarray] = []
-    initial = np.asarray(initial_price, dtype=float)
-    if initial.ndim == 0:
-        initial = np.full(len(SECTOR_IDS), float(initial))
-    if initial.shape != (len(SECTOR_IDS),):
-        raise ValueError("initial_price must be scalar or contain 11 sector prices")
-    if (initial <= 0).any() or not np.isfinite(initial).all():
-        raise ValueError("initial_price must be finite and positive")
     output_dates: list[pd.Timestamp] = []
-    volatility_state = 0.0
     for step in range(days):
         next_date = pd.bdate_range(raw_window["date"].iloc[-1] + pd.Timedelta(days=1), periods=1)[0].normalize()
-        current_event = event_vector(next_date, event_schedule, event_columns)
-        current = raw_window.iloc[-1].copy()
-        current["date"] = raw_window["date"].iloc[-1]
-        for column, value in zip(event_columns, current_event, strict=True):
-            current[column] = value
-        model_input = scaler.transform(raw_window[feature_columns].assign(**{column: current[column] for column in event_columns}))
-        values = np.asarray(model_input[feature_columns], dtype=np.float32)[None, :, :]
+        model_input = scaler.transform(raw_window[ohlcv_columns])
+        values = np.asarray(model_input[ohlcv_columns], dtype=np.float32)[None, :, :]
         if feature_z_clip is not None:
-            if feature_z_clip <= 0:
-                raise ValueError("feature_z_clip must be positive or None")
             values = np.clip(values, -float(feature_z_clip), float(feature_z_clip))
         x = torch.from_numpy(values).to(device)
-        volatility_innovation = float(torch.randn(1, generator=generator, device=device).item())
-        volatility_state = (
-            volatility_persistence * volatility_state
-            + np.sqrt(1.0 - volatility_persistence**2) * volatility_innovation
-        )
-        volatility_multiplier = float(
-            np.exp(volatility_shock_scale * volatility_state - 0.5 * volatility_shock_scale**2)
-        )
         with torch.no_grad():
-            params = model(x)
-            sampled = sample_returns(
-                params,
-                generator=generator,
-                volatility_scale=volatility_scale * volatility_multiplier,
-                factor_loadings=getattr(model, "factor_loadings", None),
-                common_noise_weight=float(getattr(model, "common_noise_weight", 0.0)),
-            )
-            if step == 0:
-                sigma = sigma_from_log_sigma(params[..., 1])
-                LOGGER.info(
-                    "generation units: mu=[%.6f, %.6f], log_sigma=[%.6f, %.6f], sigma=[%.6f, %.6f]",
-                    float(params[..., 0].min()),
-                    float(params[..., 0].max()),
-                    float(params[..., 1].min()),
-                    float(params[..., 1].max()),
-                    float(sigma.min()),
-                    float(sigma.max()),
+            prediction = model(x)
+            if tuple(prediction.shape) != (1, len(SECTOR_IDS), len(OHLCV_FIELDS)):
+                raise ValueError(
+                    "OHLCV model output must have shape "
+                    f"[1, {len(SECTOR_IDS)}, {len(OHLCV_FIELDS)}], got {tuple(prediction.shape)}"
                 )
-        returns = sampled[0].detach().cpu().numpy().astype(float)
-        raw_sampled_returns.append(returns.copy())
-        if soft_clip is not None:
-            returns = float(soft_clip) * np.tanh(returns / float(soft_clip))
-        if hard_clip:
-            returns = np.clip(returns, low, high)
+            if step == 0:
+                LOGGER.info(
+                    "generation units: standardized OHLCV output=[%.6f, %.6f]",
+                    float(prediction.min()),
+                    float(prediction.max()),
+                )
+        standardized = prediction[0].detach().cpu().numpy().astype(np.float64).reshape(1, -1)
+        raw_bar = scaler.inverse_transform(standardized).reshape(len(SECTOR_IDS), len(OHLCV_FIELDS))
+        raw_bar = _repair_ohlcv_bar(raw_bar)
+        previous = raw_window.iloc[-1][ohlcv_columns].to_numpy(dtype=float).reshape(
+            len(SECTOR_IDS), len(OHLCV_FIELDS)
+        )
+        close_index = OHLCV_FIELDS.index("close")
+        returns = np.log(raw_bar[:, close_index] / previous[:, close_index])
         if not np.isfinite(returns).all():
-            raise FloatingPointError("Model generated a non-finite return")
+            raise FloatingPointError("OHLCV close-to-close compatibility returns became non-finite")
+        generated_bars.append(raw_bar)
         generated_returns.append(returns)
-        next_row = _advance_raw_row(
-            current,
-            date=next_date,
-            returns=returns,
-            generated_returns=generated_returns[:-1],
-            event_values=current_event,
-            event_columns=event_columns,
-        )
-        raw_window = pd.concat([raw_window, next_row.to_frame().T], ignore_index=True).tail(sequence_length)
+        next_row = {"date": next_date}
+        next_row.update(dict(zip(ohlcv_columns, raw_bar.reshape(-1), strict=True)))
+        raw_window = pd.concat([raw_window, pd.DataFrame([next_row])], ignore_index=True).tail(sequence_length)
         output_dates.append(next_date)
-    prices = prices_from_returns(np.asarray(generated_returns), initial_price=initial)
+    bars = np.asarray(generated_bars, dtype=np.float64)
     if generate_ohlc:
-        result = ohlc_frame(
-            output_dates,
-            np.asarray(generated_returns),
-            prices,
-            initial_price=initial,
-            seed=int(seed) + 1_000_003,
-            gap_ratio=ohlc_gap_ratio,
-            range_scale=ohlc_range_scale,
-            minimum_range=ohlc_minimum_range,
-        )
+        result = ohlcv_frame(output_dates, bars)
     else:
-        result = pd.DataFrame(prices, columns=SECTOR_IDS)
-        result.insert(0, "date", output_dates)
+        result = pd.DataFrame({"date": output_dates})
+        for index, sector_id in enumerate(SECTOR_IDS):
+            result[sector_id] = bars[:, index, OHLCV_FIELDS.index("close")]
     if raw_returns_path is not None:
-        raw_result = pd.DataFrame(np.asarray(raw_sampled_returns), columns=SECTOR_IDS)
+        raw_result = pd.DataFrame(np.asarray(generated_returns), columns=SECTOR_IDS)
         raw_result.insert(0, "date", output_dates)
         raw_result.to_csv(ensure_parent(raw_returns_path), index=False)
     return result
@@ -560,8 +580,13 @@ def generate_from_config(
         ohlc_minimum_range=float(generation_config.get("ohlc_minimum_range", 0.001)),
     )
     write_parquet(result, config_path(config, "generated_prices"))
-    if resolved_generate_ohlc and "generated_ohlc" in config.get("paths", {}):
-        write_parquet(extract_ohlc_frame(result), config_path(config, "generated_ohlc"))
+    if resolved_generate_ohlc:
+        paths = config.get("paths", {})
+        if "generated_ohlcv" in paths:
+            write_parquet(extract_ohlcv_frame(result), config_path(config, "generated_ohlcv"))
+        elif "generated_ohlc" in paths:
+            # Backward-compatible path name; the contents are now OHLCV.
+            write_parquet(extract_ohlcv_frame(result), config_path(config, "generated_ohlc"))
     if resolved_generate_ohlc and "candlestick_test_image" in config.get("paths", {}):
         try:
             save_candlestick_chart(

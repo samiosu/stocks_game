@@ -11,9 +11,9 @@ paths:
   sector_data: data/processed/sector_data.parquet
   feature_schema: data/processed/feature_schema.json
   scaler: models/feature_scaler.pkl
-  checkpoint: models/gru_model.pt
+  checkpoint: models/lstm_model.pt
   generated_prices: data/generated/generated_prices.parquet
-  generated_ohlc: data/generated/generated_ohlc.parquet
+  generated_ohlcv: data/generated/generated_ohlcv.parquet
   raw_generated_returns: reports/raw_generated_returns.csv
   candlestick_test_image: reports/figures/generated_candlestick.png
   evaluation_report: reports/evaluation_report.html
@@ -53,10 +53,7 @@ model:
   num_layers: 1
   dropout: 0.0
   bidirectional: false
-  factor_mode: true
-  mu_scale: 0.002
-  factor_return_scales: [0.006, 0.003, 0.002]
-  max_sigma: 0.04
+  ohlcv_features: 5
 
 training:
   seed: 42
@@ -65,24 +62,12 @@ training:
   learning_rate: 0.001
   weight_decay: 0.00001
   patience: 10
-  volatility_loss_weight: 0.1
-  mean_loss_weight: 0.25
   device: auto
 
 generation:
-  volatility_scale: 1.0
-  return_clipping_percentile: [0.5, 99.5]
-  hard_clip: false
-  return_soft_clip: 0.08
   feature_z_clip: 6.0
-  volatility_persistence: 0.9
-  volatility_shock_scale: 0.18
   generate_ohlc: true
-  ohlc_gap_ratio: 0.35
-  ohlc_range_scale: 0.8
-  ohlc_minimum_range: 0.001
   candlestick_sector: energy
-  initial_price: 100.0
 
 evaluation:
   horizon: 120

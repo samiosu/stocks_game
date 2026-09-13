@@ -1,6 +1,6 @@
 # `tests` Pythonファイル学習ガイド
 
-このディレクトリには、銘柄選択、データ取得、特徴量、scaler、因子、GRU、生成、ONNX変換を確認するテストがあります。
+このディレクトリには、銘柄選択、データ取得、特徴量、scaler、因子、LSTM、生成、ONNX変換を確認するテストがあります。
 
 ## テストの実行
 
@@ -31,9 +31,10 @@ pytest
 
 | ファイル | 確認内容 |
 |---|---|
-| [`test_model.py`](test_model.py) | GRUの出力形状、損失、sigmaの正値性、seedによる再現性、セクター間依存を確認します。 |
-| [`test_generation.py`](test_generation.py) | 0・正・負のリターンからの価格再構成、OHLC制約、ローソク足画像、イベント減衰を確認します。 |
-| [`test_export_onnx.py`](test_export_onnx.py) | ONNXの入出力形状、scaler、セクター順、`mu`・`log_sigma`のメタデータを確認します。 |
+| [`test_model.py`](test_model.py) | LSTMが標準化済みOHLCVを受け、`[batch, 11, 5]`を返すことと損失を確認します。 |
+| [`test_generation.py`](test_generation.py) | OHLCV列、OHLC制約、ローソク足画像、イベント互換処理を確認します。 |
+| [`test_evaluate.py`](test_evaluate.py) | 評価画像がclose経路だけを表示し、旧ボラティリティ・リターン画像を作らないことを確認します。 |
+| [`test_export_onnx.py`](test_export_onnx.py) | ONNXの入出力形状、LSTM演算子、OHLCV scaler metadataを確認します。 |
 
 ## 学習のポイント
 
@@ -41,8 +42,6 @@ pytest
 
 - scalerの変換と逆変換
 - 未来データの混入防止
-- 対数リターンから価格への再構成
+- OHLCVの標準化と逆変換
 - `High`、`Low`を含むOHLCの大小関係
-- 同じ乱数seedによる再現性
-- ONNXへ渡す特徴量列順の一致
-
+- ONNXへ渡すOHLCV列順の一致

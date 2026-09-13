@@ -1,4 +1,4 @@
-"""Export the GRU inference graph for Unity Sentis/Inference Engine."""
+"""Export the LSTM inference graph for Unity Sentis/Inference Engine."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 
 from .config import config_path, ensure_parent, load_config, setup_logging
-from .constants import SECTOR_IDS
+from .constants import OHLCV_FIELDS, SECTOR_IDS
 from .generate import _load_checkpoint
 from .preprocessing import FeatureScaler
 
@@ -23,7 +23,7 @@ def export_onnx_model(
     scaler_path: str | Path,
     output_path: str | Path,
     *,
-    opset_version: int = 17,
+    opset_version: int = 15,
     metadata_path: str | Path | None = None,
 ) -> Path:
     try:
@@ -38,20 +38,28 @@ def export_onnx_model(
     device = torch.device("cpu")
     model, checkpoint = _load_checkpoint(checkpoint_path, device)
     sequence_length = int(checkpoint.get("sequence_length", 60))
+    ohlcv_columns = list(checkpoint["ohlcv_columns"])
+    expected_output_size = len(SECTOR_IDS) * len(OHLCV_FIELDS)
+    if len(scaler.columns) != expected_output_size or len(ohlcv_columns) != expected_output_size:
+        raise ValueError("The OHLCV scaler/checkpoint must contain 11 sectors x 5 fields")
+    if list(scaler.columns) != ohlcv_columns:
+        raise ValueError("The OHLCV scaler columns do not match the checkpoint order")
     dummy = torch.zeros((1, sequence_length, len(scaler.columns)), dtype=torch.float32)
     output = ensure_parent(output_path)
     model.eval()
     export_kwargs = {
         "input_names": ["features"],
-        "output_names": ["params"],
-        "dynamic_axes": {"features": {0: "batch"}, "params": {0: "batch"}},
+        "output_names": ["ohlcv"],
         "opset_version": opset_version,
         "do_constant_folding": True,
     }
+    # Unity consumes one market window at a time. Keep the exported LSTM
+    # batch dimension fixed at one because the initial hidden/cell states are
+    # internal constants rather than explicit ONNX inputs.
     # Newer PyTorch releases default to the torch.export-based exporter, which
     # may require an additional onnxscript package. The legacy exporter is
-    # intentionally selected when the keyword exists because it is the most
-    # widely supported path for GRU graphs consumed by Unity.
+    # intentionally selected when the keyword exists because it produces the
+    # ONNX LSTM operator supported by Unity Sentis/Inference Engine.
     if "dynamo" in inspect.signature(torch.onnx.export).parameters:
         export_kwargs["dynamo"] = False
     torch.onnx.export(model, dummy, output, **export_kwargs)
@@ -62,48 +70,35 @@ def export_onnx_model(
     metadata_output = ensure_parent(metadata_path or output.with_suffix(".metadata.json"))
     scaler_mean = np.asarray(scaler.mean_, dtype=np.float32).tolist()
     scaler_scale = np.asarray(scaler.scale_, dtype=np.float32).tolist()
-    bounds = checkpoint.get("return_bounds", [])
-    factor_metadata = checkpoint.get("factor_metadata", {})
-    factor_loadings = factor_metadata.get("factor_loadings", [])
-    factor_flat = [value for row in factor_loadings for value in row]
     generation_config = checkpoint.get("generation_config", {})
     metadata = {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
+        "modelType": "LSTM_OHLCV",
+        "inputType": "OHLCV",
+        "outputType": "OHLCV",
         "onnx": {
             "inputName": "features",
-            "outputName": "params",
+            "outputName": "ohlcv",
             "inputShape": [1, sequence_length, len(scaler.columns)],
-            "outputShape": [1, len(SECTOR_IDS), 2],
+            "outputShape": [1, len(SECTOR_IDS), len(OHLCV_FIELDS)],
             "opset": opset_version,
         },
         "sequenceLength": sequence_length,
         "featureSize": len(scaler.columns),
         "featureColumns": list(scaler.columns),
+        "ohlcvFields": list(OHLCV_FIELDS),
+        "ohlcvColumns": ohlcv_columns,
         "sectorIds": list(SECTOR_IDS),
-        "returnUnit": "log_return",
         "outputSemantics": {
-            "mu": "conditional mean log return",
-            "logSigma": "bounded log standard deviation of log return",
-            "sigmaFormula": "softplus(logSigma) + 1e-5",
-            "samplingFormula": "mu + sigma * epsilon, epsilon ~ N(0, 1)",
-            "priceFormula": "previousPrice * exp(logReturn)",
+            "input": "standardized raw OHLCV values in ohlcvColumns order",
+            "output": "standardized next raw OHLCV values in [open, high, low, close, volume] order",
+            "inverseTransform": "raw = standardized * scale + mean",
+            "postprocess": "clamp positive open/close/volume and enforce high >= max(open, close), low <= min(open, close)",
         },
         "scaler": {"mean": scaler_mean, "scale": scaler_scale},
-        "returnBounds": bounds,
-        "returnLow": [row[0] for row in bounds],
-        "returnHigh": [row[1] for row in bounds],
-        "factorNames": factor_metadata.get("factor_names", []),
-        "factorCount": len(factor_metadata.get("factor_names", [])),
-        "factorLoadings": factor_flat,
-        "commonNoiseWeight": factor_metadata.get("common_noise_weight", 0.0),
-        "factorExplainedVarianceRatio": factor_metadata.get("explained_variance_ratio", []),
         "generation": {
             "seed": checkpoint.get("generation_seed"),
-            "hardClip": bool(generation_config.get("hard_clip", False)),
-            "returnSoftClip": generation_config.get("return_soft_clip", 0.08),
             "featureZClip": generation_config.get("feature_z_clip", 6.0),
-            "volatilityPersistence": generation_config.get("volatility_persistence", 0.9),
-            "volatilityShockScale": generation_config.get("volatility_shock_scale", 0.18),
         },
     }
     metadata_output.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -116,7 +111,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="config/config.yaml")
     parser.add_argument("--output", default=None)
-    parser.add_argument("--opset", type=int, default=17)
+    parser.add_argument("--opset", type=int, default=15)
     parser.add_argument("--metadata", default=None, help="Unity JSON metadata path")
     args = parser.parse_args(argv)
     setup_logging()

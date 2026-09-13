@@ -149,9 +149,15 @@ def _save_figures(
     real_returns: np.ndarray,
     generated_returns: np.ndarray,
     output_dir: str | Path,
-    *,
-    raw_generated_returns: np.ndarray | None = None,
 ) -> list[Path]:
+    """Save only close-path comparison visuals for the OHLCV model.
+
+    ``real_returns`` and ``generated_returns`` remain the evaluation API used
+    by the numeric metrics, but volatility, return-distribution, and
+    correlation plots belong to the removed return-distribution model and are
+    intentionally no longer rendered here.
+    """
+
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     try:
@@ -162,44 +168,15 @@ def _save_figures(
     paths: list[Path] = []
     real_prices = 100.0 * np.exp(np.cumsum(real_returns, axis=0))
     generated_prices = 100.0 * np.exp(np.cumsum(generated_returns, axis=0))
-    figure, axes = plt.subplots(4, 1, figsize=(14, 18), constrained_layout=True)
+    figure, axes = plt.subplots(2, 1, figsize=(14, 10), constrained_layout=True)
     axes[0].plot(real_prices, alpha=0.45)
-    axes[0].set_title("Historical sector paths (normalized to 100)")
+    axes[0].set_title("Historical close paths (normalized to 100)")
+    axes[0].set_ylabel("Normalized close")
     axes[1].plot(generated_prices, alpha=0.75)
-    axes[1].set_title("Generated sector paths (normalized to 100)")
-    axes[2].plot(pd.DataFrame(real_returns).rolling(20).std(ddof=0), alpha=0.45)
-    axes[2].set_title("Historical 20-day rolling volatility")
-    axes[3].plot(pd.DataFrame(generated_returns).rolling(20).std(ddof=0), alpha=0.75)
-    axes[3].set_title("Generated 20-day rolling volatility")
+    axes[1].set_title("Generated close paths (normalized to 100)")
+    axes[1].set_ylabel("Normalized close")
+    axes[1].set_xlabel("Trading day")
     path = output / "real_vs_generated.png"
-    figure.savefig(path, dpi=140)
-    plt.close(figure)
-    paths.append(path)
-
-    figure, axes = plt.subplots(1, 2, figsize=(14, 6), constrained_layout=True)
-    axes[0].imshow(_correlation_matrix(real_returns), vmin=-1, vmax=1, cmap="coolwarm")
-    axes[0].set_title("Historical return correlation")
-    axes[1].imshow(_correlation_matrix(generated_returns), vmin=-1, vmax=1, cmap="coolwarm")
-    axes[1].set_title("Generated return correlation")
-    path = output / "sector_correlation.png"
-    figure.savefig(path, dpi=140)
-    plt.close(figure)
-    paths.append(path)
-
-    raw = generated_returns if raw_generated_returns is None else raw_generated_returns
-    figure, axes = plt.subplots(1, 2, figsize=(14, 6), constrained_layout=True)
-    axes[0].hist(real_returns.reshape(-1), bins=60, density=True, alpha=0.55, label="historical")
-    axes[0].hist(raw.reshape(-1), bins=60, density=True, alpha=0.55, label="generated raw")
-    axes[0].set_title("Raw generated return distribution")
-    axes[0].set_xlabel("log return")
-    axes[0].legend()
-    quantiles = np.array([0.01, 0.05, 0.50, 0.95, 0.99])
-    axes[1].plot(quantiles, np.quantile(real_returns.reshape(-1), quantiles), "o-", label="historical")
-    axes[1].plot(quantiles, np.quantile(raw.reshape(-1), quantiles), "o-", label="generated raw")
-    axes[1].set_title("Return quantiles")
-    axes[1].set_xlabel("quantile")
-    axes[1].legend()
-    path = output / "return_distribution.png"
     figure.savefig(path, dpi=140)
     plt.close(figure)
     paths.append(path)
@@ -406,13 +383,10 @@ def evaluate_scenarios(
             volatility_persistence=float(generation_config.get("volatility_persistence", 0.9)),
             volatility_shock_scale=float(generation_config.get("volatility_shock_scale", 0.18)),
         )
-        _, generated_returns = _returns_from_generated(generated_prices, initial_price=100.0)
+        previous_close_columns = [f"{sector_id}__close" for sector_id in SECTOR_IDS]
+        previous_close = real_frame.iloc[start - 1][previous_close_columns].to_numpy(dtype=float)
+        _, generated_returns = _returns_from_generated(generated_prices, initial_price=previous_close)
         generated_runs.append(generated_returns)
-
-    raw_generated_returns = generated_runs[0]
-    if raw_path.exists():
-        raw_frame = pd.read_csv(raw_path)
-        raw_generated_returns = raw_frame[list(SECTOR_IDS)].to_numpy(dtype=float)
 
     real_run_metrics = _metrics_for_runs(real_runs, "real_window")
     generated_run_metrics = _metrics_for_runs(generated_runs, "generated_seed")
@@ -487,7 +461,6 @@ def evaluate_scenarios(
         real_runs[0],
         generated_runs[0],
         report_path.parent / "figures",
-        raw_generated_returns=raw_generated_returns,
     )
     table = summary.to_html(index=False, float_format=lambda value: f"{value:.8f}")
     seed_table = seed_metrics.describe(include="all").to_html(float_format=lambda value: f"{value:.8f}")

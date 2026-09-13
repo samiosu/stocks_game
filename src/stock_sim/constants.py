@@ -41,9 +41,10 @@ STOCK_FEATURES = (
     "excess_n225",
 )
 
+OHLCV_FIELDS = ("open", "high", "low", "close", "volume")
+
 
 def sector_name(sector_id: str) -> str:
     """Return the canonical Japanese name for a sector ID."""
 
     return SECTOR_NAMES[sector_id]
-

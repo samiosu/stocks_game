@@ -2,7 +2,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from stock_sim.generate import event_vector, ohlc_frame, prices_from_returns, save_candlestick_chart
+from stock_sim.constants import OHLCV_FIELDS, SECTOR_IDS
+from stock_sim.generate import (
+    _repair_ohlcv_bar,
+    event_vector,
+    ohlc_frame,
+    ohlcv_frame,
+    prices_from_returns,
+    save_candlestick_chart,
+)
 
 
 def test_price_generation_is_finite_and_seed_independent_for_deterministic_returns():
@@ -51,6 +59,27 @@ def test_ohlc_invariants_and_close_alignment():
         assert (high_values >= np.maximum(open_values, close_values)).all()
         assert (low_values <= np.minimum(open_values, close_values)).all()
         assert (low_values > 0).all()
+
+
+def test_direct_ohlcv_frame_contains_model_output_fields():
+    bars = np.empty((4, len(SECTOR_IDS), len(OHLCV_FIELDS)), dtype=float)
+    bars[:, :, 0] = 100.0
+    bars[:, :, 1] = 105.0
+    bars[:, :, 2] = 95.0
+    bars[:, :, 3] = 102.0
+    bars[:, :, 4] = 1_000_000.0
+    frame = ohlcv_frame(pd.bdate_range("2026-01-01", periods=4), bars)
+    assert all(f"{SECTOR_IDS[0]}__{field}" in frame for field in OHLCV_FIELDS)
+    np.testing.assert_allclose(frame[SECTOR_IDS[0]], frame[f"{SECTOR_IDS[0]}__close"])
+    assert (frame[f"{SECTOR_IDS[0]}__volume"] > 0).all()
+
+
+def test_ohlcv_repair_enforces_positive_values_and_candle_bounds():
+    bad = np.full((len(SECTOR_IDS), len(OHLCV_FIELDS)), -1.0)
+    repaired = _repair_ohlcv_bar(bad)
+    assert (repaired > 0).all()
+    assert (repaired[:, 1] >= np.maximum(repaired[:, 0], repaired[:, 3])).all()
+    assert (repaired[:, 2] <= np.minimum(repaired[:, 0], repaired[:, 3])).all()
 
 
 def test_mplfinance_saves_generated_candlestick_image(tmp_path):

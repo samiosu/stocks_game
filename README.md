@@ -1,6 +1,6 @@
 # 日本株セクター市場生成モデル
 
-日本株の過去の値動きから、市場全体の局面・セクターローテーション・変化するボラティリティ・イベント反応を学習し、ゲーム用のセクター価格系列を確率的に生成するPython実装です。売買シグナルや将来価格の予測を目的としません。
+日本株の過去のOHLCVから11セクターの次のOHLCVをLSTMで生成し、ゲーム用の市場系列として出力するPython実装です。売買シグナルや将来価格の予測を目的としません。
 
 ## 構成
 
@@ -49,17 +49,19 @@ Yahoo Financeで `^TPX` の履歴が欠損する場合は、設定済みの `130
 
 ## 特徴量と学習
 
-株価水準ではなく、対数リターン、OHLC相対値、出来高変化、5日/20日ボラティリティ、TOPIX・日経平均に対する超過リターンを使います。セクター系列はデフォルトで構成銘柄の等ウェイト平均です。`config/config.yaml` の `sector_aggregation.method` を `market_cap_weighted` にすると時価総額ウェイトへ変更できます。個別銘柄特徴量は `data/processed/stock_features.parquet` に保持します。
+`sector_data.parquet` には従来のリターン・ボラティリティ等の分析用特徴量に加え、セクターごとの生OHLCVを保持します。LSTMの学習入力はこのうち `ohlcv_columns`（11セクター×Open/High/Low/Close/Volumeの55列）です。セクター系列はデフォルトで構成銘柄の等ウェイト平均です。`config/config.yaml` の `sector_aggregation.method` を `market_cap_weighted` にすると時価総額ウェイトへ変更できます。個別銘柄特徴量は `data/processed/stock_features.parquet` に保持します。
 
-入力系列は60営業日、GRUの出力は `[batch, 11, 2]`（各セクターの `mu` と `log_sigma`）です。`sigma = softplus(log_sigma) + 1e-5` として、実データから推定したmarket/rotation/volatilityのfactor loadingを使った共通ノイズと固有ノイズからリターンをサンプリングします。価格は `close[t+1] = close[t] * exp(return[t+1])` で積み上げます。イベント入力がない場合は全イベント要素が0です。`horizon` は1または5に切り替えられます。
+入力系列は60営業日、LSTMの出力は `[batch, 11, 5]`（各セクターの次のOHLCV）です。学習時は生OHLCVを学習期間の平均・標準偏差で標準化し、出力生成時に逆変換して実スケールのOHLCVへ戻します。`SmoothL1Loss`による点予測で、`high >= max(open, close)`、`low <= min(open, close)`、各値の正値制約を生成時に検査・補正します。
 
-学習・検証・テストは時系列順に固定し、デフォルトは2015–2021、2022–2023、2024–実行時点です。スケーラーは学習期間だけでfitし、`models/feature_scaler.pkl` に保存します。factor loadingはゲーム用の相関構造として全履歴から推定し、checkpoint内の `factor_metadata` に保存します。
+モデルはUnity Sentis/Inference Engineで対応しているONNX `LSTM` 演算子を使います。GRU時代のチェックポイントはLSTMと重み形式が異なるため再利用せず、設定を更新した状態で学習とONNX出力をやり直してください。
+
+学習・検証・テストは時系列順に固定し、デフォルトは2015–2021、2022–2023、2024–実行時点です。スケーラーはOHLCVの学習期間だけでfitし、`models/feature_scaler.pkl` に保存します。GRUや旧確率的LSTMのチェックポイントは互換性がないため、OHLCV設定で再学習してください。
 
 ## 生成とUnity
 
-生成にはseed、日数、初期価格、イベントスケジュール、ボラティリティ倍率、連続soft clipを指定できます。百分位hard clipは必要な場合だけ明示的に有効化します。同じseed・同じチェックポイント・同じ入力履歴なら同じ系列を再現します。close系列から始値ギャップと日中レンジを連続乱数で生成し、OHLC制約を満たすローソク足を作ります。結果は `data/generated/generated_prices.parquet`（close互換列＋OHLC列）、`data/generated/generated_ohlc.parquet`（OHLC専用）、raw sampled returnsは `reports/raw_generated_returns.csv`、ローソク足画像は `reports/figures/generated_candlestick.png` に保存されます。
+生成は過去60行のOHLCVから次のOHLCVを自己回帰的に直接予測します。同じチェックポイントと入力履歴なら同じ系列を再現します。結果は `data/generated/generated_prices.parquet`（close互換列＋55個のOHLCV列）、`data/generated/generated_ohlcv.parquet`（OHLCV専用）、互換用closeリターンは `reports/raw_generated_returns.csv`、ローソク足画像は `reports/figures/generated_candlestick.png` に保存されます。
 
-`export_onnx` は `models/gru_model.onnx` と `models/gru_model.metadata.json` を作成します。Unity Sentis/Inference Engineでは、float32の `[1, 60, feature_size]` を `features` 入力へ渡し、`params` 出力 `[1, 11, 2]` の最後の次元をmu/log_sigmaとして利用します。ONNXはモデルの推論部だけを含み、特徴量計算・スケーリング・イベントベクトル生成・乱数サンプリングはPythonまたはUnity側で同じ仕様を実装してください。特徴量の順序、scaler、factor loading、生成設定はmetadata JSONに保存されます。
+`export_onnx` は `models/lstm_model.onnx` と `models/lstm_model.metadata.json` を作成します。Unity Sentis/Inference Engineでは、float32の標準化済み `[1, 60, 55]` を `features` 入力へ渡し、`ohlcv` 出力 `[1, 11, 5]` を `open/high/low/close/volume` の順で受け取ります。逆標準化に必要な列順、平均、標準偏差、出力意味はmetadata JSONに保存されます。
 
 Unityへの導入手順、Unity用メタデータの作成、C#実装例、複数日生成の注意点は [Unity統合マニュアル](docs/UNITY_INTEGRATION.md) を参照してください。
 

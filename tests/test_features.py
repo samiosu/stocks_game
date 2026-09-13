@@ -1,8 +1,8 @@
 import numpy as np
 import pandas as pd
 
-from stock_sim.constants import SECTOR_DEFINITIONS
-from stock_sim.dataset import make_window_arrays
+from stock_sim.constants import OHLCV_FIELDS, SECTOR_DEFINITIONS
+from stock_sim.dataset import make_ohlcv_window_arrays, make_window_arrays
 from stock_sim.features import build_feature_frame
 from stock_sim.preprocessing import FeatureScaler
 
@@ -42,7 +42,9 @@ def test_feature_frame_has_no_nan_and_expected_sector_features():
     assert len(sector) > 0
     assert len(stocks) > 0
     assert len(schema["return_columns"]) == 11
+    assert len(schema["ohlcv_columns"]) == 11 * len(OHLCV_FIELDS)
     assert np.isfinite(sector[schema["feature_columns"]].to_numpy()).all()
+    assert np.isfinite(sector[schema["ohlcv_columns"]].to_numpy()).all()
     assert np.isfinite(sector[schema["return_columns"]].to_numpy()).all()
     assert any(column.startswith("event__") for column in schema["event_columns"])
 
@@ -56,3 +58,20 @@ def test_windows_do_not_include_future_rows_in_input():
     second = make_window_arrays(changed, feature_columns=["feature"], return_columns=["return"], volatility_columns=["vol"], sequence_length=3, horizon=1, scaler=scaler)
     assert np.array_equal(first.features[:-1], second.features[:-1])
 
+
+def test_ohlcv_windows_use_the_same_columns_for_input_and_target():
+    prices, indices, selected = _synthetic_inputs(days=100)
+    sector, _, schema = build_feature_frame(prices, indices, selected)
+    columns = schema["ohlcv_columns"]
+    scaler = FeatureScaler(columns).fit(sector.loc[:49, columns])
+    arrays = make_ohlcv_window_arrays(
+        sector,
+        ohlcv_columns=columns,
+        sequence_length=5,
+        horizon=1,
+        scaler=scaler,
+    )
+    assert arrays.features.shape[1:] == (5, 11 * len(OHLCV_FIELDS))
+    assert arrays.targets.shape[1] == 11 * len(OHLCV_FIELDS)
+    assert np.isfinite(arrays.features).all()
+    assert np.isfinite(arrays.targets).all()

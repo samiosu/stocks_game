@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 from .config import config_path, ensure_parent, load_config, setup_logging
-from .constants import DEFAULT_EVENT_TYPES, SECTOR_DEFINITIONS, STOCK_FEATURES
+from .constants import DEFAULT_EVENT_TYPES, OHLCV_FIELDS, SECTOR_DEFINITIONS, STOCK_FEATURES
 from .io import read_parquet, write_parquet
 from .preprocessing import assert_finite
 
@@ -150,6 +150,55 @@ def _add_market_features(
     return result, market_columns
 
 
+def _aggregate_sector_ohlcv(
+    prices: pd.DataFrame,
+    selected: pd.DataFrame,
+    *,
+    method: str,
+) -> tuple[pd.DataFrame, list[str]]:
+    """Aggregate raw stock OHLCV into one OHLCV bar per sector and date."""
+
+    if method not in {"equal_weighted", "market_cap_weighted"}:
+        raise ValueError("sector aggregation method must be equal_weighted or market_cap_weighted")
+    required = {"date", "ticker", *OHLCV_FIELDS}
+    missing = required - set(prices.columns)
+    if missing:
+        raise ValueError(f"Price data missing columns for OHLCV aggregation: {sorted(missing)}")
+    work = prices[["date", "ticker", *OHLCV_FIELDS]].copy()
+    work["date"] = pd.to_datetime(work["date"]).dt.normalize()
+    work["ticker"] = work["ticker"].astype(str)
+    selected_map = selected[["ticker", "sector_id", "market_cap_jpy"]].copy()
+    selected_map["ticker"] = selected_map["ticker"].astype(str)
+    work = work.merge(selected_map, on="ticker", how="inner", validate="many_to_one")
+    for column in OHLCV_FIELDS:
+        work[column] = pd.to_numeric(work[column], errors="coerce")
+    work = work.dropna(subset=[*OHLCV_FIELDS])
+    if work.empty:
+        raise ValueError("No raw OHLCV rows remain after joining the selected universe")
+
+    rows: list[dict[str, Any]] = []
+    for date, day in work.groupby("date", sort=True):
+        item: dict[str, Any] = {"date": pd.Timestamp(date).normalize()}
+        for sector_id, _ in SECTOR_DEFINITIONS:
+            sector_day = day[day["sector_id"].eq(sector_id)]
+            if sector_day.empty:
+                for field in OHLCV_FIELDS:
+                    item[f"{sector_id}__{field}"] = np.nan
+                continue
+            weights = sector_day["market_cap_jpy"] if method == "market_cap_weighted" else None
+            for field in OHLCV_FIELDS:
+                column = f"{sector_id}__{field}"
+                if field == "volume":
+                    # Volume is an additive activity measure, unlike prices.
+                    item[column] = float(sector_day[field].sum())
+                else:
+                    item[column] = _weighted_mean(sector_day, field, weights)
+        rows.append(item)
+    result = pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
+    columns = [f"{sector_id}__{field}" for sector_id, _ in SECTOR_DEFINITIONS for field in OHLCV_FIELDS]
+    return result[["date", *columns]], columns
+
+
 def build_feature_frame(
     prices: pd.DataFrame,
     indices: pd.DataFrame,
@@ -186,6 +235,8 @@ def build_feature_frame(
         method=aggregation_method,
     )
     sector, market_columns = _add_market_features(sector, indices, return_columns)
+    sector_ohlcv, ohlcv_columns = _aggregate_sector_ohlcv(prices, selected, method=aggregation_method)
+    sector = sector.merge(sector_ohlcv, on="date", how="left", validate="one_to_one")
     event_columns: list[str] = []
     # Keep a global type signal and a sector-specific mask/intensity signal.
     # The latter makes affected_sectors part of the model input rather than a
@@ -206,13 +257,14 @@ def build_feature_frame(
     # Use only observations for which every sector and market feature is known.
     # This removes initial rolling windows and incomplete trading days instead
     # of forward filling information across a missing observation.
-    sector[feature_columns] = sector[feature_columns].replace([np.inf, -np.inf], np.nan)
+    sector[feature_columns + ohlcv_columns] = sector[feature_columns + ohlcv_columns].replace([np.inf, -np.inf], np.nan)
     before = len(sector)
-    sector = sector.dropna(subset=feature_columns).sort_values("date").reset_index(drop=True)
+    sector = sector.dropna(subset=feature_columns + ohlcv_columns).sort_values("date").reset_index(drop=True)
     LOGGER.info("Dropped %s incomplete feature rows", before - len(sector))
     stock_features = stock_features.replace([np.inf, -np.inf], np.nan).sort_values(["ticker", "date"])
     schema = {
         "feature_columns": feature_columns,
+        "ohlcv_columns": ohlcv_columns,
         "sector_feature_columns": sector_columns,
         "market_feature_columns": market_columns,
         "event_columns": event_columns,

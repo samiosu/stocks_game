@@ -46,10 +46,10 @@ export_onnx.py
 
 | ファイル | 役割 | 学習ポイント |
 |---|---|---|
-| [`features.py`](features.py) | OHLCVから対数リターン、出来高変化、5日・20日ボラティリティ、指数との差などを計算し、セクター系列を作ります。 | 価格水準ではなく、`log(close_t / close_t-1)`を中心に学習します。未来のデータを使わないことが重要です。 |
+| [`features.py`](features.py) | OHLCVから分析用特徴量を計算し、同時にセクター別の生OHLCV列を作ります。 | LSTMの主入力は`ohlcv_columns`の55列です。分析用のリターン・ボラティリティ列は学習入力ではありません。 |
 | [`build_features.py`](build_features.py) | `features.py`の処理をCLIから実行するラッパーです。 | 実際の計算は`features.py`にあります。 |
 | [`preprocessing.py`](preprocessing.py) | 特徴量を標準化し、平均・標準偏差の保存と逆変換を行います。 | scalerは学習期間だけでfitし、生成時も同じ値を使います。 |
-| [`dataset.py`](dataset.py) | 過去60期間などの入力ウィンドウと、予測対象のリターン・ボラティリティを作ります。 | 入力範囲に未来のデータが混ざらないようにします。 |
+| [`dataset.py`](dataset.py) | 過去60期間のOHLCV入力ウィンドウと、次のOHLCV targetを作ります。 | 入力範囲に未来のデータが混ざらないようにします。旧リターン用関数も評価互換のため残しています。 |
 
 主な中間ファイルは次の通りです。
 
@@ -58,39 +58,39 @@ export_onnx.py
 - `data/processed/feature_schema.json`
 - `models/feature_scaler.pkl`
 
-## 因子モデルとGRU
+## OHLCVモデルとLSTM
 
 | ファイル | 役割 | 学習ポイント |
 |---|---|---|
-| [`factors.py`](factors.py) | 11セクターのリターンから`market`、`rotation`、`volatility`の共通因子とloadingsを推定します。 | セクターを独立乱数にせず、実データに近い相関構造を作ります。 |
-| [`model.py`](model.py) | 過去の特徴量から、各セクターの次のリターン分布の`mu`と`log_sigma`を出力するGRUです。 | 点予測ではなく、`sigma = softplus(log_sigma) + 1e-5`で連続的な確率分布を生成します。 |
-| [`train.py`](train.py) | 時系列分割、scaler、因子推定、GRU学習、早期停止、チェックポイント保存を行います。 | モデル重みだけでなく、列順、scaler、因子情報も保存します。 |
+| [`model.py`](model.py) | 過去の標準化済みOHLCVから、全セクターの次のOHLCVを出力するLSTMです。 | 入力・出力とも11セクター×5項目で、出力形状は`[batch, 11, 5]`です。 |
+| [`train.py`](train.py) | 時系列分割、OHLCV scaler、LSTM学習、早期停止、チェックポイント保存を行います。 | モデル重みだけでなく、OHLCV列順とscalerを保存します。 |
 
 モデルの主な入出力は次の形です。
 
 ```text
-入力 : [batch_size, 60, feature_size]
-出力 : [batch_size, 11, 2]
-       └─ mu, log_sigma
+入力 : [batch_size, 60, 55]
+       └─ 11セクター × (open, high, low, close, volume)
+出力 : [batch_size, 11, 5]
+       └─ 次の (open, high, low, close, volume)
 ```
 
 ## 生成・評価・Unity出力
 
 | ファイル | 役割 | 主な出力 |
 |---|---|---|
-| [`generate.py`](generate.py) | GRUからリターンをサンプリングし、価格とOHLCを生成します。 | `generated_prices.parquet`、`generated_ohlc.parquet`、ローソク足PNG |
-| [`evaluate.py`](evaluate.py) | 実データと生成データのリターン、ボラティリティ、自己相関、ドローダウン、セクター相関などを比較します。 | CSV、PNG、`evaluation_report.html` |
-| [`export_onnx.py`](export_onnx.py) | PyTorchモデルをUnity向けONNXへ変換し、scalerや因子情報をJSONに保存します。 | `models/gru_model.onnx`、`models/gru_model.metadata.json` |
+| [`generate.py`](generate.py) | LSTMから次のOHLCVを直接自己回帰生成します。 | `generated_prices.parquet`、`generated_ohlcv.parquet`、ローソク足PNG |
+| [`evaluate.py`](evaluate.py) | 実データと生成データの数値指標を比較します。画像はclose経路比較だけを出力し、旧ボラティリティ・リターン分布・相関画像は作りません。 | CSV、close経路PNG、`evaluation_report.html` |
+| [`export_onnx.py`](export_onnx.py) | PyTorchモデルをUnity向けONNXへ変換し、OHLCV scalerをJSONに保存します。 | `models/lstm_model.onnx`、`models/lstm_model.metadata.json` |
 
-`generate.py`の価格再構成は次の式です。
+`generate.py`は、標準化された出力を次の式で生OHLCVへ戻します。
 
 ```python
-price_next = price_current * exp(return_next)
+raw_ohlcv = standardized_ohlcv * scale + mean
 ```
 
-OHLCは、生成されたClose-to-CloseリターンからOpen・High・Lowを連続乱数で構成します。`High >= max(Open, Close)`、`Low <= min(Open, Close)`などのローソク足制約も確認します。
+生成後は`High >= max(Open, Close)`、`Low <= min(Open, Close)`、Open/Close/Volumeの正値制約を確認します。
 
-ONNXにはモデル推論部分が入ります。特徴量作成、scaler、乱数サンプリング、価格再構成、OHLC生成はUnity側でも同じ仕様を使う必要があります。
+ONNXにはモデル推論部分が入ります。OHLCVの列順・scalerの逆変換・OHLCV制約の適用はUnity側でも同じ仕様を使う必要があります。
 
 ## CLI実行順
 
@@ -103,4 +103,3 @@ python -m stock_sim.generate --days 120 --seed 42
 python -m stock_sim.evaluate
 python -m stock_sim.export_onnx
 ```
-
