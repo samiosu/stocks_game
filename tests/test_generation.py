@@ -11,6 +11,7 @@ from stock_sim.generate import (
     prices_from_returns,
     save_candlestick_chart,
 )
+from stock_sim.ohlcv import bars_to_relative, relative_to_bars
 
 
 def test_price_generation_is_finite_and_seed_independent_for_deterministic_returns():
@@ -80,6 +81,30 @@ def test_ohlcv_repair_enforces_positive_values_and_candle_bounds():
     assert (repaired > 0).all()
     assert (repaired[:, 1] >= np.maximum(repaired[:, 0], repaired[:, 3])).all()
     assert (repaired[:, 2] <= np.minimum(repaired[:, 0], repaired[:, 3])).all()
+
+
+def test_relative_ohlcv_round_trip_preserves_bar_structure():
+    previous = np.tile(np.array([[100.0, 103.0, 98.0, 101.0, 1_000_000.0]]), (len(SECTOR_IDS), 1))
+    current = np.tile(np.array([[102.0, 106.0, 99.0, 105.0, 1_100_000.0]]), (len(SECTOR_IDS), 1))
+
+    relative = bars_to_relative(current, previous)
+    restored = relative_to_bars(relative, previous)
+
+    np.testing.assert_allclose(restored, current)
+    assert (restored[:, 1] >= np.maximum(restored[:, 0], restored[:, 3])).all()
+    assert (restored[:, 2] <= np.minimum(restored[:, 0], restored[:, 3])).all()
+    assert (restored > 0).all()
+
+
+def test_relative_ohlcv_volume_uses_trailing_reference():
+    previous = np.tile(np.array([[100.0, 103.0, 98.0, 101.0, 1_000_000.0]]), (len(SECTOR_IDS), 1))
+    current = np.tile(np.array([[102.0, 106.0, 99.0, 105.0, 1_100_000.0]]), (len(SECTOR_IDS), 1))
+    reference = np.full(len(SECTOR_IDS), 2_000_000.0)
+
+    relative = bars_to_relative(current, previous, volume_reference=reference)
+    restored = relative_to_bars(relative, previous, volume_reference=reference)
+
+    np.testing.assert_allclose(restored, current)
 
 
 def test_mplfinance_saves_generated_candlestick_image(tmp_path):

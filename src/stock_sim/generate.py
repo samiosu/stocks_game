@@ -17,6 +17,12 @@ from .config import config_path, ensure_parent, load_config, seed_everything, se
 from .constants import OHLCV_FIELDS, SECTOR_DEFINITIONS, SECTOR_IDS
 from .io import read_parquet, write_parquet
 from .model import MarketLSTM, require_torch
+from .ohlcv import (
+    RELATIVE_OHLCV_FIELDS,
+    geometric_volume_reference,
+    relative_column_names,
+    relative_to_bars,
+)
 from .preprocessing import FeatureScaler
 
 LOGGER = logging.getLogger(__name__)
@@ -273,20 +279,45 @@ def _load_checkpoint(path: str | Path, device: Any) -> tuple[Any, dict[str, Any]
     except TypeError:  # torch < 2.6
         checkpoint = torch.load(path, map_location=device)
     checkpoint_type = str(checkpoint.get("model_type", "")).lower()
-    if checkpoint_type != "lstm_ohlcv":
+    if checkpoint_type != "lstm_relative_ohlcv":
         raise ValueError(
             f"Checkpoint {path} contains model_type={checkpoint_type!r}; "
-            "retrain it with the LSTM OHLCV configuration"
+            "retrain it with the relative OHLCV LSTM configuration"
         )
     if str(checkpoint.get("input_type", "")).lower() != "ohlcv":
         raise ValueError(f"Checkpoint {path} is not an OHLCV-input model")
     if len(checkpoint.get("ohlcv_columns", [])) != len(SECTOR_IDS) * len(OHLCV_FIELDS):
         raise ValueError(f"Checkpoint {path} does not contain 11-sector OHLCV columns")
+    if str(checkpoint.get("target_type", "")).lower() != "relative_ohlcv":
+        raise ValueError(f"Checkpoint {path} does not contain relative OHLCV targets")
+    if len(checkpoint.get("relative_columns", [])) != len(SECTOR_IDS) * len(RELATIVE_OHLCV_FIELDS):
+        raise ValueError(f"Checkpoint {path} does not contain relative OHLCV columns")
+    if list(checkpoint.get("relative_columns", [])) != relative_column_names():
+        raise ValueError(f"Checkpoint {path} uses an incompatible relative OHLCV schema")
     model = MarketLSTM(**checkpoint["model_kwargs"])
     model.load_state_dict(checkpoint["state_dict"])
     model.to(device)
     model.eval()
     return model, checkpoint
+
+
+def _relative_scaler_from_checkpoint(checkpoint: dict[str, Any]) -> FeatureScaler:
+    metadata = checkpoint.get("relative_scaler_metadata", {})
+    columns = list(checkpoint.get("relative_columns", []))
+    if columns != list(metadata.get("columns", [])):
+        raise ValueError("Relative target scaler columns do not match the checkpoint")
+    scaler = FeatureScaler(columns)
+    scaler.mean_ = np.asarray(metadata.get("mean", []), dtype=np.float64)
+    scaler.scale_ = np.asarray(metadata.get("scale", []), dtype=np.float64)
+    if (
+        scaler.mean_.shape != (len(columns),)
+        or scaler.scale_.shape != (len(columns),)
+        or not np.isfinite(scaler.mean_).all()
+        or not np.isfinite(scaler.scale_).all()
+        or (scaler.scale_ <= 0).any()
+    ):
+        raise ValueError("Invalid relative target scaler metadata")
+    return scaler
 
 
 def _event_list(event_schedule: Any) -> list[dict[str, Any]]:
@@ -401,6 +432,10 @@ def generate_price_paths(
     *,
     days: int,
     seed: int = 42,
+    target_scaler: FeatureScaler | None = None,
+    stochastic_scale: float | None = None,
+    volume_stochastic_scale: float | None = None,
+    relative_clip: tuple[float, ...] | list[float] | None = None,
     initial_price: float | Iterable[float] = 100.0,
     event_schedule: Any = None,
     volatility_scale: float = 1.0,
@@ -417,11 +452,14 @@ def generate_price_paths(
     ohlc_range_scale: float = 0.8,
     ohlc_minimum_range: float = 0.001,
 ) -> pd.DataFrame:
-    """Autoregressively predict the next raw OHLCV bar for every sector.
+    """Autoregressively predict relative dynamics and reconstruct raw OHLCV.
 
     The model input is the last ``sequence_length`` rows of standardized raw
-    OHLCV values. The model output is also standardized OHLCV; this function
-    inverse-transforms it and appends the resulting bar to the rolling window.
+    OHLCV values. The model output is standardized relative OHLCV dynamics;
+    this function adds calibrated residual noise, reconstructs a physically
+    consistent bar from the previous close and trailing geometric-mean volume,
+    and appends it to the
+    rolling window.
     The old return/sampling arguments remain in the signature for callers that
     used the previous generator, but are intentionally ignored.
     """
@@ -432,7 +470,6 @@ def generate_price_paths(
     if days < 1:
         raise ValueError("days must be positive")
     del (
-        seed,
         initial_price,
         event_schedule,
         volatility_scale,
@@ -451,6 +488,9 @@ def generate_price_paths(
     if len(ohlcv_columns) != expected_column_count:
         raise ValueError("Checkpoint must contain 11-sector OHLCV columns")
     sequence_length = int(checkpoint.get("sequence_length", 60))
+    volume_lookback = int(checkpoint.get("volume_lookback", 20))
+    if volume_lookback < 1 or volume_lookback > sequence_length:
+        raise ValueError("Checkpoint volume_lookback must be between one and sequence_length")
     if len(history_frame) < sequence_length:
         raise ValueError(f"history_frame needs at least {sequence_length} rows")
     history = history_frame.copy().sort_values("date").reset_index(drop=True)
@@ -466,9 +506,29 @@ def generate_price_paths(
         raise ValueError("history_frame contains non-positive OHLCV values")
     if feature_z_clip is not None and feature_z_clip <= 0:
         raise ValueError("feature_z_clip must be positive or None")
-    for column in ohlcv_columns:
-        if column not in history:
-            raise ValueError(f"history_frame missing {column}")
+    if target_scaler is None:
+        target_scaler = _relative_scaler_from_checkpoint(checkpoint)
+    relative_columns = list(checkpoint.get("relative_columns", []))
+    if list(target_scaler.columns) != relative_columns:
+        raise ValueError("Relative target scaler columns do not match the checkpoint order")
+    noise_scale = np.asarray(checkpoint.get("relative_noise_scale", []), dtype=np.float64)
+    if noise_scale.shape != (len(RELATIVE_OHLCV_FIELDS),) or not np.isfinite(noise_scale).all():
+        raise ValueError("Checkpoint must contain five finite relative noise scales")
+    generation_config = checkpoint.get("generation_config", {})
+    if stochastic_scale is None:
+        stochastic_scale = float(generation_config.get("stochastic_scale", 1.5))
+    if stochastic_scale < 0 or not np.isfinite(stochastic_scale):
+        raise ValueError("stochastic_scale must be finite and non-negative")
+    if volume_stochastic_scale is None:
+        volume_stochastic_scale = float(generation_config.get("volume_stochastic_scale", 0.25))
+    if volume_stochastic_scale < 0 or not np.isfinite(volume_stochastic_scale):
+        raise ValueError("volume_stochastic_scale must be finite and non-negative")
+    if relative_clip is None:
+        relative_clip = generation_config.get("relative_clip")
+    noise_multiplier = np.ones(len(RELATIVE_OHLCV_FIELDS), dtype=np.float64)
+    noise_multiplier[-1] = float(volume_stochastic_scale)
+    effective_noise_scale = noise_scale * float(stochastic_scale) * noise_multiplier
+    rng = np.random.default_rng(int(seed))
     device = next(model.parameters()).device
     model.eval()
     raw_window = history.tail(sequence_length)[["date", *ohlcv_columns]].copy()
@@ -491,15 +551,32 @@ def generate_price_paths(
                 )
             if step == 0:
                 LOGGER.info(
-                    "generation units: standardized OHLCV output=[%.6f, %.6f]",
+                    "generation units: standardized relative OHLCV output=[%.6f, %.6f], noise_scale=%s",
                     float(prediction.min()),
                     float(prediction.max()),
+                    np.round(effective_noise_scale, 4).tolist(),
                 )
-        standardized = prediction[0].detach().cpu().numpy().astype(np.float64).reshape(1, -1)
-        raw_bar = scaler.inverse_transform(standardized).reshape(len(SECTOR_IDS), len(OHLCV_FIELDS))
-        raw_bar = _repair_ohlcv_bar(raw_bar)
+        standardized_relative = prediction[0].detach().cpu().numpy().astype(np.float64)
+        standardized_relative += rng.normal(
+            loc=0.0,
+            scale=effective_noise_scale[None, :],
+            size=standardized_relative.shape,
+        )
+        relative = target_scaler.inverse_transform(standardized_relative.reshape(1, -1)).reshape(
+            len(SECTOR_IDS), len(RELATIVE_OHLCV_FIELDS)
+        )
         previous = raw_window.iloc[-1][ohlcv_columns].to_numpy(dtype=float).reshape(
             len(SECTOR_IDS), len(OHLCV_FIELDS)
+        )
+        window_bars = raw_window[ohlcv_columns].to_numpy(dtype=float).reshape(
+            -1, len(SECTOR_IDS), len(OHLCV_FIELDS)
+        )
+        volume_reference = geometric_volume_reference(window_bars, volume_lookback)
+        raw_bar = relative_to_bars(
+            relative,
+            previous,
+            volume_reference=volume_reference,
+            relative_clip=relative_clip,
         )
         close_index = OHLCV_FIELDS.index("close")
         returns = np.log(raw_bar[:, close_index] / previous[:, close_index])
@@ -548,6 +625,7 @@ def generate_from_config(
     device = torch.device(requested_device)
     model, checkpoint = _load_checkpoint(config_path(config, "checkpoint"), device)
     scaler = FeatureScaler.load(config_path(config, "scaler"))
+    target_scaler = FeatureScaler.load(config_path(config, "relative_scaler"))
     history = read_parquet(config_path(config, "sector_data"))
     generation_config = config.get("generation", {})
     resolved_hard_clip = bool(generation_config.get("hard_clip", False)) if hard_clip is None else hard_clip
@@ -563,6 +641,10 @@ def generate_from_config(
         checkpoint,
         days=days,
         seed=seed,
+        target_scaler=target_scaler,
+        stochastic_scale=float(generation_config.get("stochastic_scale", 1.5)),
+        volume_stochastic_scale=float(generation_config.get("volume_stochastic_scale", 0.25)),
+        relative_clip=generation_config.get("relative_clip"),
         initial_price=initial_price if initial_price is not None else generation_config.get("initial_price", 100.0),
         event_schedule=event_schedule,
         volatility_scale=volatility_scale if volatility_scale is not None else generation_config.get("volatility_scale", 1.0),

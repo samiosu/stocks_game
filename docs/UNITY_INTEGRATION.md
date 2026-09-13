@@ -1,6 +1,6 @@
 # OHLCV LSTMモデルをUnityで使用する
 
-このプロジェクトのONNXモデルは、GRUではなくUnityで扱えるLSTMを使用します。現在のモデルは、過去60営業日の11セクター分OHLCVを入力し、次の11セクター分OHLCVを直接出力します。
+このプロジェクトのONNXモデルは、GRUではなくUnityで扱えるLSTMを使用します。過去60営業日の11セクター分OHLCVを入力し、内部では相対OHLCVダイナミクスを推定します。ONNXの外部出力は、前バーの終値と直近20日出来高の幾何平均から再構成済みの次の11セクター分の生OHLCVです。
 
 ## 1. 学習とONNX出力
 
@@ -50,13 +50,17 @@ ONNXへ渡す前に、各列を次で標準化します。
 normalized[i] = (raw[i] - mean[i]) / scale[i]
 ```
 
-ONNX出力は標準化済みなので、Unity側で次の逆変換を行います。
+ONNX出力はすでに生OHLCVです。`output`はセクターmajorの`[open, high, low, close, volume]`です。内部で相対ターゲットscalerの逆変換と、次の式による再構成を行います。
 
 ```text
-raw[i] = output[i] * scale[i] + mean[i]
+open = previousClose * exp(gap)
+close = open * exp(body)
+high = max(open, close) * exp(upperWick)
+low = min(open, close) * exp(-lowerWick)
+volume = trailing20dGeometricMeanVolume * exp(logVolumeRatio)
 ```
 
-`output`はセクターmajorの`[open, high, low, close, volume]`です。生成後は、`open`・`close`・`volume`を正値にし、`high >= max(open, close)`、`low <= min(open, close)`を確認してください。
+出力は`open`・`close`・`volume`が正値で、`high >= max(open, close)`、`low <= min(open, close)`となるようグラフ内で制約されます。
 
 ## 4. 初期ウィンドウの作成
 
@@ -106,6 +110,12 @@ public sealed class StockMarketOnnxRunner : MonoBehaviour
         public int featureSize;
         public string[] ohlcvFields;
         public string[] ohlcvColumns;
+        public Scaler scaler;
+    }
+
+    [Serializable]
+    private sealed class Scaler
+    {
         public float[] mean;
         public float[] scale;
     }
@@ -142,8 +152,8 @@ public sealed class StockMarketOnnxRunner : MonoBehaviour
         for (int i = 0; i < expected; i++)
         {
             int field = i % metadata.featureSize;
-            float scale = Mathf.Max(metadata.scale[field], 1e-12f);
-            normalized[i] = (rawWindow[i] - metadata.mean[field]) / scale;
+            float scale = Mathf.Max(metadata.scaler.scale[field], 1e-12f);
+            normalized[i] = (rawWindow[i] - metadata.scaler.mean[field]) / scale;
         }
 
         using (var input = new Tensor<float>(
@@ -154,35 +164,11 @@ public sealed class StockMarketOnnxRunner : MonoBehaviour
             if (outputTensor == null)
                 throw new InvalidOperationException("The model output is not Tensor<float>.");
 
-            float[] standardized = outputTensor.DownloadToArray();
-            if (standardized.Length != SectorCount * FieldCount)
+            float[] rawBar = outputTensor.DownloadToArray();
+            if (rawBar.Length != SectorCount * FieldCount)
                 throw new InvalidOperationException("Expected output shape [1, 11, 5].");
 
-            for (int i = 0; i < standardized.Length; i++)
-            {
-                float scale = Mathf.Max(metadata.scale[i], 1e-12f);
-                standardized[i] = standardized[i] * scale + metadata.mean[i];
-            }
-            RepairOhlcv(standardized);
-            return standardized;
-        }
-    }
-
-    private static void RepairOhlcv(float[] bar)
-    {
-        for (int sector = 0; sector < SectorCount; sector++)
-        {
-            int offset = sector * FieldCount;
-            float open = Mathf.Max(bar[offset + 0], 1e-6f);
-            float high = Mathf.Max(bar[offset + 1], 1e-6f);
-            float low = Mathf.Max(bar[offset + 2], 1e-6f);
-            float close = Mathf.Max(bar[offset + 3], 1e-6f);
-            float volume = Mathf.Max(bar[offset + 4], 1e-6f);
-            bar[offset + 0] = open;
-            bar[offset + 1] = Mathf.Max(high, Mathf.Max(open, close));
-            bar[offset + 2] = Mathf.Min(low, Mathf.Min(open, close));
-            bar[offset + 3] = close;
-            bar[offset + 4] = volume;
+            return rawBar;
         }
     }
 
@@ -202,13 +188,13 @@ public sealed class StockMarketOnnxRunner : MonoBehaviour
 過去60行の生OHLCV
     ↓ scalerで標準化
 LSTM: [1, 60, 55] → [1, 11, 5]
-    ↓ scalerを逆変換・OHLCV制約を適用
+    ↓ 相対値を前バーから生OHLCVへ再構成
 次の11セクターOHLCV
     ↓ 入力ウィンドウ末尾へ追加
 再び推論
 ```
 
-入力にはイベント特徴量やリターン特徴量を追加しません。モデルの入力は55個のOHLCV列だけです。出力は点予測であり、旧モデルの`mu`、`log_sigma`、factor noise、OHLC後処理は使用しません。
+入力にはイベント特徴量やリターン特徴量を追加しません。モデルの入力は55個のOHLCV列だけです。Python生成では検証残差ノイズを加えますが、ONNX/Unity推論は決定的です。旧モデルの`mu`、`log_sigma`、factor noiseは使用しません。
 
 ## 7. 保存形式
 
@@ -239,7 +225,7 @@ energy__volume
 - [ ] 出力名が`ohlcv`
 - [ ] 出力が`[1, 11, 5]`
 - [ ] `ohlcvColumns`の列順を変更していない
-- [ ] mean/scaleで入力を標準化し、出力を逆変換している
+- [ ] mean/scaleで入力を標準化している（出力はすでに生OHLCV）
 - [ ] Open/Close/Volumeが正値
 - [ ] High/LowがOpen/Closeを包含している
 - [ ] Workerと入力Tensorを適切にDisposeしている

@@ -70,8 +70,11 @@ def test_ohlcv_windows_use_the_same_columns_for_input_and_target():
         sequence_length=5,
         horizon=1,
         scaler=scaler,
+        volume_lookback=5,
     )
     assert arrays.features.shape[1:] == (5, 11 * len(OHLCV_FIELDS))
     assert arrays.targets.shape[1] == 11 * len(OHLCV_FIELDS)
+    assert arrays.teacher_features is not None
+    assert arrays.teacher_features.shape[1:] == (1, 11 * len(OHLCV_FIELDS))
     assert np.isfinite(arrays.features).all()
     assert np.isfinite(arrays.targets).all()

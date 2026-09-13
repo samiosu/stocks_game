@@ -1,4 +1,4 @@
-"""A shared LSTM that predicts the next OHLCV bar for all sectors."""
+"""A shared LSTM that predicts relative OHLCV dynamics for all sectors."""
 
 from __future__ import annotations
 
@@ -22,11 +22,11 @@ OHLCV_FIELD_COUNT = 5
 if nn is not None:
 
     class MarketLSTM(nn.Module):
-        """LSTM whose output is the next ``[batch, sectors, OHLCV]`` bar.
+        """LSTM whose output is the next ``[batch, sectors, relative OHLCV]`` bar.
 
-        Inputs and targets are standardized raw sector OHLCV values. The
-        scaler is kept outside the model so the ONNX graph remains a simple
-        LSTM plus a linear output head.
+        Inputs are standardized raw sector OHLCV values. Targets are
+        standardized gap/body/wick/volume-ratio values. Reconstruction into
+        raw OHLCV is performed by the autoregressive generator.
         """
 
         def __init__(
@@ -126,14 +126,17 @@ def probabilistic_loss(
 
 
 def ohlcv_loss(predicted: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    """Compute a robust loss on standardized next-bar OHLCV values."""
+    """Compute a robust loss on standardized relative OHLCV targets."""
 
     require_torch()
     if predicted.shape != target.shape:
         raise ValueError(f"predicted and target shapes must match, got {predicted.shape} and {target.shape}")
-    if predicted.ndim != 3 or predicted.shape[-1] != OHLCV_FIELD_COUNT:
-        raise ValueError("OHLCV tensors must have shape [batch, sectors, 5]")
+    if predicted.ndim < 3 or predicted.shape[-1] != OHLCV_FIELD_COUNT:
+        raise ValueError("Relative OHLCV tensors must end with shape [..., sectors, 5]")
     return F.smooth_l1_loss(predicted, target)
+
+
+relative_ohlcv_loss = ohlcv_loss
 
 
 def sample_returns(

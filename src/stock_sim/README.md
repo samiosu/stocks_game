@@ -62,8 +62,8 @@ export_onnx.py
 
 | ファイル | 役割 | 学習ポイント |
 |---|---|---|
-| [`model.py`](model.py) | 過去の標準化済みOHLCVから、全セクターの次のOHLCVを出力するLSTMです。 | 入力・出力とも11セクター×5項目で、出力形状は`[batch, 11, 5]`です。 |
-| [`train.py`](train.py) | 時系列分割、OHLCV scaler、LSTM学習、早期停止、チェックポイント保存を行います。 | モデル重みだけでなく、OHLCV列順とscalerを保存します。 |
+| [`model.py`](model.py) | 過去の標準化済みOHLCVから、相対OHLCVダイナミクスを出力するLSTMです。 | 入力・出力とも11セクター×5項目で、出力形状は`[batch, 11, 5]`です。 |
+| [`train.py`](train.py) | 時系列分割、入力・相対ターゲットscaler、5日rollout LSTM学習、早期停止、チェックポイント保存を行います。 | 検証残差から生成ノイズも校正します。 |
 
 モデルの主な入出力は次の形です。
 
@@ -71,26 +71,31 @@ export_onnx.py
 入力 : [batch_size, 60, 55]
        └─ 11セクター × (open, high, low, close, volume)
 出力 : [batch_size, 11, 5]
-       └─ 次の (open, high, low, close, volume)
+       └─ (gap, body, upper_wick, lower_wick, log_volume_ratio)
+再構成 : 前バーのcloseと直近20日出来高の幾何平均を基準に次の生OHLCV
 ```
 
 ## 生成・評価・Unity出力
 
 | ファイル | 役割 | 主な出力 |
 |---|---|---|
-| [`generate.py`](generate.py) | LSTMから次のOHLCVを直接自己回帰生成します。 | `generated_prices.parquet`、`generated_ohlcv.parquet`、ローソク足PNG |
+| [`generate.py`](generate.py) | 相対値をLSTMで予測し、前バーから次のOHLCVを自己回帰再構成します。 | `generated_prices.parquet`、`generated_ohlcv.parquet`、ローソク足PNG |
 | [`evaluate.py`](evaluate.py) | 実データと生成データの数値指標を比較します。画像はclose経路比較だけを出力し、旧ボラティリティ・リターン分布・相関画像は作りません。 | CSV、close経路PNG、`evaluation_report.html` |
 | [`export_onnx.py`](export_onnx.py) | PyTorchモデルをUnity向けONNXへ変換し、OHLCV scalerをJSONに保存します。 | `models/lstm_model.onnx`、`models/lstm_model.metadata.json` |
 
-`generate.py`は、標準化された出力を次の式で生OHLCVへ戻します。
+`generate.py`は、標準化された相対出力を次のように生OHLCVへ戻します。
 
 ```python
-raw_ohlcv = standardized_ohlcv * scale + mean
+open = previous_close * exp(gap_log_return)
+close = open * exp(body_log_return)
+high = max(open, close) * exp(upper_wick_log_range)
+low = min(open, close) * exp(-lower_wick_log_range)
+volume = trailing_20d_geometric_mean_volume * exp(log_volume_ratio)
 ```
 
 生成後は`High >= max(Open, Close)`、`Low <= min(Open, Close)`、Open/Close/Volumeの正値制約を確認します。
 
-ONNXにはモデル推論部分が入ります。OHLCVの列順・scalerの逆変換・OHLCV制約の適用はUnity側でも同じ仕様を使う必要があります。
+ONNXには相対ヘッド、入力scalerの逆変換、前バーからのOHLCV再構成、相対値のクリップが含まれます。Unityの入力は生OHLCVをmetadataのscalerで標準化し、出力 `[1, 11, 5]` はすでに生OHLCVです。Python側の確率ノイズはONNXには含めず、Unity推論は決定的にしています。
 
 ## CLI実行順
 

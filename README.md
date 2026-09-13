@@ -51,7 +51,7 @@ Yahoo Financeで `^TPX` の履歴が欠損する場合は、設定済みの `130
 
 `sector_data.parquet` には従来のリターン・ボラティリティ等の分析用特徴量に加え、セクターごとの生OHLCVを保持します。LSTMの学習入力はこのうち `ohlcv_columns`（11セクター×Open/High/Low/Close/Volumeの55列）です。セクター系列はデフォルトで構成銘柄の等ウェイト平均です。`config/config.yaml` の `sector_aggregation.method` を `market_cap_weighted` にすると時価総額ウェイトへ変更できます。個別銘柄特徴量は `data/processed/stock_features.parquet` に保持します。
 
-入力系列は60営業日、LSTMの出力は `[batch, 11, 5]`（各セクターの次のOHLCV）です。学習時は生OHLCVを学習期間の平均・標準偏差で標準化し、出力生成時に逆変換して実スケールのOHLCVへ戻します。`SmoothL1Loss`による点予測で、`high >= max(open, close)`、`low <= min(open, close)`、各値の正値制約を生成時に検査・補正します。
+入力系列は60営業日、LSTMの出力ヘッドは `[batch, 11, 5]`（ギャップ、実体、上下ヒゲ、直近出来高からの比率）です。学習時は生OHLCVの入力を標準化し、相対ターゲットを学習します。生成時は前バーの終値と直近20日出来高の幾何平均から生OHLCVへ再構成するため、価格水準の退行、長いヒゲ、出来高の累積暴走を抑えられます。5日間のteacher-forcing rollout lossと、検証残差に基づく確率ノイズを使い、出来高ノイズは価格より小さくします。`high >= max(open, close)`、`low <= min(open, close)`、各値の正値制約は再構成時に保証します。
 
 モデルはUnity Sentis/Inference Engineで対応しているONNX `LSTM` 演算子を使います。GRU時代のチェックポイントはLSTMと重み形式が異なるため再利用せず、設定を更新した状態で学習とONNX出力をやり直してください。
 
@@ -59,9 +59,9 @@ Yahoo Financeで `^TPX` の履歴が欠損する場合は、設定済みの `130
 
 ## 生成とUnity
 
-生成は過去60行のOHLCVから次のOHLCVを自己回帰的に直接予測します。同じチェックポイントと入力履歴なら同じ系列を再現します。結果は `data/generated/generated_prices.parquet`（close互換列＋55個のOHLCV列）、`data/generated/generated_ohlcv.parquet`（OHLCV専用）、互換用closeリターンは `reports/raw_generated_returns.csv`、ローソク足画像は `reports/figures/generated_candlestick.png` に保存されます。
+生成は過去60行のOHLCVから相対値を自己回帰予測し、前バーの終値と直近20日出来高の幾何平均を基準に次のOHLCVを再構成します。Python生成はseedと検証残差ノイズを使うため、同じseedなら同じ系列を再現します。結果は `data/generated/generated_prices.parquet`（close互換列＋55個のOHLCV列）、`data/generated/generated_ohlcv.parquet`（OHLCV専用）、互換用closeリターンは `reports/raw_generated_returns.csv`、ローソク足画像は `reports/figures/generated_candlestick.png` に保存されます。
 
-`export_onnx` は `models/lstm_model.onnx` と `models/lstm_model.metadata.json` を作成します。Unity Sentis/Inference Engineでは、float32の標準化済み `[1, 60, 55]` を `features` 入力へ渡し、`ohlcv` 出力 `[1, 11, 5]` を `open/high/low/close/volume` の順で受け取ります。逆標準化に必要な列順、平均、標準偏差、出力意味はmetadata JSONに保存されます。
+`export_onnx` は `models/lstm_model.onnx` と `models/lstm_model.metadata.json` を作成します。Unity Sentis/Inference Engineでは、float32の標準化済み `[1, 60, 55]` を `features` 入力へ渡し、`ohlcv` 出力 `[1, 11, 5]` を `open/high/low/close/volume` の順で受け取ります。入力標準化の列順・平均・標準偏差と、内部相対表現の仕様はmetadata JSONに保存されます。
 
 Unityへの導入手順、Unity用メタデータの作成、C#実装例、複数日生成の注意点は [Unity統合マニュアル](docs/UNITY_INTEGRATION.md) を参照してください。
 
