@@ -1,0 +1,246 @@
+{
+  "schemaVersion": 1,
+  "sequenceLength": 60,
+  "featureSize": 55,
+  "perRegime": 3,
+  "windowCount": 12,
+  "metadataFile": "lstm_model.metadata.json",
+  "metadataSha256": "718326e94c7e6d70a7f542b1d321533556208ba2fe1a9cdb6896cb669e1d45a8",
+  "sourceDataFile": "sector_data.parquet",
+  "tradingCalendarFile": "prices.parquet",
+  "marketDefinition": "Geometric mean of 11 sector closes normalized to each window's first day",
+  "metricUnits": "Returns/ranges are fractions; daily volatility is sample std of log returns (not annualized)",
+  "continuity": "60 consecutive observed trading dates in the reference price data; no filling or stitching",
+  "overlapPolicy": "No shared dates between any selected windows, including different regimes",
+  "purpose": "Initial game conditions only; not an evaluation split or a guarantee of future regime",
+  "sourceDataQuality": {
+    "sourceRows": 2557,
+    "invalidOhlcvRows": 1,
+    "invalidOhlcvDates": [
+      "2022-05-17"
+    ],
+    "possibleWindows": 2498,
+    "excludedInvalidOhlcvWindows": 60,
+    "excludedNonconsecutiveWindows": 299,
+    "validWindows": 2139
+  },
+  "selection": {
+    "criteria": {
+      "minimumTrendReturn": 0.05,
+      "minimumTrendRSquared": 0.5,
+      "minimumSectorAgreement": 0.7,
+      "maximumSidewaysAbsoluteReturn": 0.02,
+      "maximumSidewaysPriceRange": 0.08,
+      "calmVolatilityQuantile": 0.5,
+      "calmDailyVolatilityLimit": 0.010195784975205775,
+      "volatileVolatilityQuantile": 0.9,
+      "volatileDailyVolatilityMinimum": 0.019709745180738054
+    },
+    "candidateCounts": {
+      "bull": 605,
+      "bear": 58,
+      "sideways": 182,
+      "volatile": 214
+    },
+    "selectionPriority": [
+      "bear",
+      "sideways",
+      "volatile",
+      "bull"
+    ]
+  },
+  "scenarios": [
+    {
+      "id": "bull_01",
+      "regime": "bull",
+      "label": "上昇",
+      "file": "bull_01.json",
+      "startDate": "2023-12-21",
+      "endDate": "2024-03-22",
+      "metrics": {
+        "totalReturn": 0.2558679246606489,
+        "dailyVolatility": 0.008854937699363371,
+        "priceRange": 0.2558679246606489,
+        "trendRSquared": 0.9509488986560638,
+        "risingSectorFraction": 1.0,
+        "fallingSectorFraction": 0.0
+      }
+    },
+    {
+      "id": "bull_02",
+      "regime": "bull",
+      "label": "上昇",
+      "file": "bull_02.json",
+      "startDate": "2025-08-05",
+      "endDate": "2025-10-31",
+      "metrics": {
+        "totalReturn": 0.2258818903597282,
+        "dailyVolatility": 0.011003062831033195,
+        "priceRange": 0.2258818903597282,
+        "trendRSquared": 0.8983939647456205,
+        "risingSectorFraction": 1.0,
+        "fallingSectorFraction": 0.0
+      }
+    },
+    {
+      "id": "bull_03",
+      "regime": "bull",
+      "label": "上昇",
+      "file": "bull_03.json",
+      "startDate": "2025-04-07",
+      "endDate": "2025-07-02",
+      "metrics": {
+        "totalReturn": 0.23817820498055683,
+        "dailyVolatility": 0.015369794038297076,
+        "priceRange": 0.24022819557848782,
+        "trendRSquared": 0.8271458235634268,
+        "risingSectorFraction": 1.0,
+        "fallingSectorFraction": 0.0
+      }
+    },
+    {
+      "id": "bear_01",
+      "regime": "bear",
+      "label": "下落",
+      "file": "bear_01.json",
+      "startDate": "2019-12-18",
+      "endDate": "2020-03-19",
+      "metrics": {
+        "totalReturn": -0.31966824167000485,
+        "dailyVolatility": 0.01630431823468031,
+        "priceRange": 0.46987111472598586,
+        "trendRSquared": 0.625511269047885,
+        "risingSectorFraction": 0.0,
+        "fallingSectorFraction": 1.0
+      }
+    },
+    {
+      "id": "bear_02",
+      "regime": "bear",
+      "label": "下落",
+      "file": "bear_02.json",
+      "startDate": "2015-07-02",
+      "endDate": "2015-09-29",
+      "metrics": {
+        "totalReturn": -0.1724852009848876,
+        "dailyVolatility": 0.018879629808902582,
+        "priceRange": 0.2398625515321814,
+        "trendRSquared": 0.6526874878374451,
+        "risingSectorFraction": 0.09090909090909091,
+        "fallingSectorFraction": 0.9090909090909091
+      }
+    },
+    {
+      "id": "bear_03",
+      "regime": "bear",
+      "label": "下落",
+      "file": "bear_03.json",
+      "startDate": "2021-05-26",
+      "endDate": "2021-08-20",
+      "metrics": {
+        "totalReturn": -0.07312259881512075,
+        "dailyVolatility": 0.009489290421031067,
+        "priceRange": 0.09817506843092602,
+        "trendRSquared": 0.8248643302686187,
+        "risingSectorFraction": 0.18181818181818182,
+        "fallingSectorFraction": 0.8181818181818182
+      }
+    },
+    {
+      "id": "sideways_01",
+      "regime": "sideways",
+      "label": "横ばい",
+      "file": "sideways_01.json",
+      "startDate": "2024-11-19",
+      "endDate": "2025-02-18",
+      "metrics": {
+        "totalReturn": -0.00041428824987771294,
+        "dailyVolatility": 0.00743300719421554,
+        "priceRange": 0.04484734426699621,
+        "trendRSquared": 0.012863305118062924,
+        "risingSectorFraction": 0.5454545454545454,
+        "fallingSectorFraction": 0.45454545454545453
+      }
+    },
+    {
+      "id": "sideways_02",
+      "regime": "sideways",
+      "label": "横ばい",
+      "file": "sideways_02.json",
+      "startDate": "2016-12-19",
+      "endDate": "2017-03-16",
+      "metrics": {
+        "totalReturn": 0.0005035476051749292,
+        "dailyVolatility": 0.008559058482852076,
+        "priceRange": 0.0451212581178388,
+        "trendRSquared": 0.01080556849240421,
+        "risingSectorFraction": 0.6363636363636364,
+        "fallingSectorFraction": 0.36363636363636365
+      }
+    },
+    {
+      "id": "sideways_03",
+      "regime": "sideways",
+      "label": "横ばい",
+      "file": "sideways_03.json",
+      "startDate": "2019-02-15",
+      "endDate": "2019-05-20",
+      "metrics": {
+        "totalReturn": -0.0029545132164842114,
+        "dailyVolatility": 0.008795837264614737,
+        "priceRange": 0.056245840280018056,
+        "trendRSquared": 0.04764524354727296,
+        "risingSectorFraction": 0.36363636363636365,
+        "fallingSectorFraction": 0.6363636363636364
+      }
+    },
+    {
+      "id": "volatile_01",
+      "regime": "volatile",
+      "label": "荒れ相場",
+      "file": "volatile_01.json",
+      "startDate": "2024-07-10",
+      "endDate": "2024-10-07",
+      "metrics": {
+        "totalReturn": -0.06768257259662686,
+        "dailyVolatility": 0.02758506176652932,
+        "priceRange": 0.3169737070269387,
+        "trendRSquared": 0.21818542960038212,
+        "risingSectorFraction": 0.18181818181818182,
+        "fallingSectorFraction": 0.8181818181818182
+      }
+    },
+    {
+      "id": "volatile_02",
+      "regime": "volatile",
+      "label": "荒れ相場",
+      "file": "volatile_02.json",
+      "startDate": "2016-01-08",
+      "endDate": "2016-04-05",
+      "metrics": {
+        "totalReturn": -0.1352802014183588,
+        "dailyVolatility": 0.023412200272402678,
+        "priceRange": 0.2142877664775586,
+        "trendRSquared": 0.12671269605111748,
+        "risingSectorFraction": 0.09090909090909091,
+        "fallingSectorFraction": 0.9090909090909091
+      }
+    },
+    {
+      "id": "volatile_03",
+      "regime": "volatile",
+      "label": "荒れ相場",
+      "file": "volatile_03.json",
+      "startDate": "2020-03-23",
+      "endDate": "2020-06-18",
+      "metrics": {
+        "totalReturn": 0.2590757674702864,
+        "dailyVolatility": 0.02231236448287671,
+        "priceRange": 0.32534135448896107,
+        "trendRSquared": 0.7986340687037182,
+        "risingSectorFraction": 1.0,
+        "fallingSectorFraction": 0.0
+      }
+    }
+  ]
+}

@@ -35,6 +35,8 @@ pytest
 | [`test_generation.py`](test_generation.py) | OHLCV列、OHLC制約、ローソク足画像、イベント互換処理を確認します。 |
 | [`test_evaluate.py`](test_evaluate.py) | 評価画像がclose経路だけを表示し、旧ボラティリティ・リターン画像を作らないことを確認します。 |
 | [`test_export_onnx.py`](test_export_onnx.py) | ONNXの入出力形状、LSTM演算子、OHLCV scaler metadataを確認します。 |
+| [`test_initial_window.py`](test_initial_window.py) | Unity初期入力JSONの列順・時系列順・生OHLCV値の保持と、不正データの拒否を確認します。 |
+| [`test_initial_scenarios.py`](test_initial_scenarios.py) | 相場分類、非重複の連続取引日、元データの保持、日付欠落・不正OHLC区間の除外、再現性を確認します。 |
 
 ## 学習のポイント
 

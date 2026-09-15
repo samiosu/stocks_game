@@ -82,6 +82,8 @@ export_onnx.py
 | [`generate.py`](generate.py) | 相対値をLSTMで予測し、前バーから次のOHLCVを自己回帰再構成します。 | `generated_prices.parquet`、`generated_ohlcv.parquet`、ローソク足PNG |
 | [`evaluate.py`](evaluate.py) | 実データと生成データの数値指標を比較します。画像はclose経路比較だけを出力し、旧ボラティリティ・リターン分布・相関画像は作りません。 | CSV、close経路PNG、`evaluation_report.html` |
 | [`export_onnx.py`](export_onnx.py) | PyTorchモデルをUnity向けONNXへ変換し、OHLCV scalerをJSONに保存します。 | `models/lstm_model.onnx`、`models/lstm_model.metadata.json` |
+| [`initial_window.py`](initial_window.py) | ONNXのmetadataに合わせ、最新60行の生OHLCVを検査してUnityの初回入力用JSONへ保存します。 | `data/processed/initial_ohlcv_window.json` |
+| [`initial_scenarios.py`](initial_scenarios.py) | 連続した実データから上昇・下落・横ばい・荒れ相場の非重複ウィンドウを選びます。不正OHLCと取引日欠落を含む区間は除外します。 | `data/processed/initial_windows/*.json`、分類指標付き`catalog.json` |
 
 `generate.py`は、標準化された相対出力を次のように生OHLCVへ戻します。
 
@@ -108,4 +110,6 @@ python -m stock_sim.train --config config/config.yaml
 python -m stock_sim.generate --days 120 --seed 42
 python -m stock_sim.evaluate
 python -m stock_sim.export_onnx
+python -m stock_sim.initial_window
+python -m stock_sim.initial_scenarios --per-regime 3
 ```

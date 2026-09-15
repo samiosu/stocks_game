@@ -66,33 +66,44 @@ volume = clamp(volumeReference * exp(logVolumeRatio), previousVolume / 3, previo
 
 ## 4. 初期ウィンドウの作成
 
-初回入力は、生OHLCVの過去60行です。Python側でJSONを作る場合は次を実行します。
+初回入力は、生OHLCVの過去60行です。プロジェクトルートで次を実行します。
 
 ```bash
-python - <<'PY'
-import json
-from pathlib import Path
-
-import pandas as pd
-
-schema = json.loads(Path("data/processed/feature_schema.json").read_text(encoding="utf-8"))
-columns = schema["ohlcv_columns"]
-frame = pd.read_parquet("data/processed/sector_data.parquet").sort_values("date").tail(60)
-if len(frame) != 60:
-    raise RuntimeError(f"60 rows are required, got {len(frame)}")
-payload = {
-    "sequenceLength": 60,
-    "featureSize": len(columns),
-    "ohlcvColumns": columns,
-    "values": frame[columns].to_numpy(dtype="float32").reshape(-1).tolist(),
-}
-Path("data/processed/initial_ohlcv_window.json").write_text(
-    json.dumps(payload), encoding="utf-8"
-)
-PY
+python -m stock_sim.initial_window --config config/config.yaml
 ```
 
-この`values`は標準化前です。Unity側でmetadataの`mean`と`scale`を使って標準化します。
+`data/processed/sector_data.parquet`の最新60行を古い日付から並べ、`data/processed/initial_ohlcv_window.json`へ保存します。行数と列順は`models/lstm_model.metadata.json`の`sequenceLength`・`ohlcvColumns`に従います。別のモデルや保存先を使う場合は`--metadata`・`--output`を指定できます。データの再取得やモデルの再学習は行いません。
+
+JSONには`sequenceLength`、`featureSize`、`ohlcvColumns`、各行の日付を示す`dates`、一次元配列`values`が入ります。現在の`values`は60行×55列＝3,300個のfloat32相当値で、`values[行 * 55 + 列]`の順序です。欠損値・無限大・非正値・日付重複・OHLCの大小関係を検査してから出力します。
+
+この`values`は**標準化前の生OHLCV**です。Unity側でmetadataの`scaler.mean`と`scaler.scale`を使って一度だけ標準化し、`features [1,60,55]`へ渡します。事前に±6へクリップしないでください。
+
+### 相場タイプ別の初期ウィンドウ
+
+保存済みの履歴から、上昇・下落・横ばい・荒れ相場を各3種類、合計12個作成できます。
+
+```bash
+python -m stock_sim.initial_scenarios --config config/config.yaml --per-regime 3
+```
+
+出力先は`data/processed/initial_windows/`です。
+
+| タイプ | ファイル | 分類基準 |
+|---|---|---|
+| 上昇 | `bull_01.json`〜`bull_03.json` | 騰落率＋5%以上、上昇セクター70%以上、トレンドのR²が0.5以上 |
+| 下落 | `bear_01.json`〜`bear_03.json` | 騰落率−5%以下、下落セクター70%以上、トレンドのR²が0.5以上 |
+| 横ばい | `sideways_01.json`〜`sideways_03.json` | 騰落率±2%以内、期間中の最大値÷最小値−1が8%以内、日次変動率が候補全体の中央値以下 |
+| 荒れ相場 | `volatile_01.json`〜`volatile_03.json` | 日次変動率が有効候補の上位10%に入る期間（上昇・下落の方向は問わない） |
+
+分類用の市場指標は、各セクターの終値を期間初日で正規化してから取る11セクターの幾何平均です。高価格のセクターだけが分類を左右することを避けます。日次変動率は60行内の59個の対数リターンの標本標準偏差で、年率換算はしません。上昇・下落候補は荒れ相場の変動率境界未満とし、騰落率の絶対値×R²で優先順位を付けます。横ばいは値幅＋騰落率の絶対値が小さい順、荒れ相場は変動率の大きい順です。
+
+候補の少ないタイプから選び、タイプをまたいでも12区間の取引日が重複しないようにします。元のOHLCV値はfloat32化以外に加工しません。NaN・不正OHLCを含む区間や、`data/raw/prices.parquet`の取引日と照合して途中の日が欠けている区間は除外し、日付の穴を埋めたり離れた期間を継ぎ合わせたりしません。取引日照合元は`--calendar`で変更できます。
+
+`catalog.json`には各JSONのファイル名、タイプ、日付範囲、分類指標、実際の変動率境界、除外件数、対応metadataのSHA-256を保存します。指標値の`0.05`は5%です。各ウィンドウJSONの形式は単一ウィンドウと同じです。Unityではカタログの`scenarios`から1つ選び、`file`のJSONを読み、`values`を標準化して使用します。カタログ自体をモデル入力へ渡すものではありません。
+
+`--output-dir`で保存先、`--per-regime`で個数を変更できます。条件を満たす非重複区間を指定数だけ選べない場合は、出力を始める前にエラーにします。再実行の結果は元データとmetadataが同じなら同じです。既存の`initial_ohlcv_window.json`は変更しません。既存ディレクトリに出力数を減らして再出力した場合、古いJSONは削除しないため、ファイル一覧ではなく`catalog.json`に記載されたファイルだけを使用してください。
+
+これらは学習・検証・テスト期間を含む保存済み履歴から選ぶゲーム用の初期条件で、独立したモデル評価データではありません。また、分類は開始前60日の状態であり、生成後も同じ相場タイプが続く保証はありません。プレイごとの展開も変える場合は、6節の確率的ONNXに異なるseedで抽出した残差を渡してください。
 
 ## 5. C#最小実装例
 
