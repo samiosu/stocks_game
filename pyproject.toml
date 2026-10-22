@@ -13,8 +13,8 @@ dependencies = [
   "pandas>=2.0",
   "PyYAML>=6.0",
   "yfinance>=0.2.40",
-  "pyarrow>=12.0",
-  "torch>=2.1",
+  "pyarrow>=14.0.1",
+  "torch>=2.6",
 ]
 
 [project.optional-dependencies]

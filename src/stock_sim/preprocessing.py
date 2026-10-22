@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import datetime as dt
-import pickle
+import json
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -73,17 +74,63 @@ class FeatureScaler:
         return restored
 
     def save(self, path: str | Path) -> None:
-        ensure_parent(path)
-        with Path(path).open("wb") as handle:
-            pickle.dump(self, handle)
+        if not self.fitted:
+            raise RuntimeError("FeatureScaler has not been fit")
+        metadata = {
+            "columns": self.columns,
+            "mean": self.mean_.tolist(),
+            "scale": self.scale_.tolist(),
+        }
+        self.from_metadata(metadata)
+        payload = {"schema_version": 1, **metadata}
+        output = ensure_parent(path)
+        output.write_text(json.dumps(payload, allow_nan=False) + "\n", encoding="utf-8")
+
+    @classmethod
+    def from_metadata(cls, metadata: Any) -> FeatureScaler:
+        if not isinstance(metadata, dict):
+            raise ValueError("Scaler metadata must be an object")
+        columns = metadata.get("columns")
+        if (
+            not isinstance(columns, list)
+            or not columns
+            or any(not isinstance(column, str) or not column for column in columns)
+            or len(set(columns)) != len(columns)
+        ):
+            raise ValueError("Scaler columns must be unique non-empty strings")
+        arrays = []
+        for name in ("mean", "scale"):
+            values = metadata.get(name)
+            if (
+                not isinstance(values, list)
+                or len(values) != len(columns)
+                or any(type(value) not in (int, float) for value in values)
+            ):
+                raise ValueError(f"Invalid scaler {name}")
+            try:
+                array = np.asarray(values, dtype=np.float64)
+            except (ValueError, OverflowError) as exc:
+                raise ValueError(f"Invalid scaler {name}") from exc
+            if not np.isfinite(array).all() or (name == "scale" and (array <= 0).any()):
+                raise ValueError(f"Invalid scaler {name}")
+            arrays.append(array)
+        scaler = cls(columns)
+        scaler.mean_, scaler.scale_ = arrays
+        return scaler
 
     @classmethod
     def load(cls, path: str | Path) -> FeatureScaler:
-        with Path(path).open("rb") as handle:
-            scaler = pickle.load(handle)
-        if not isinstance(scaler, cls):
-            raise TypeError(f"Not a {cls.__name__}: {path}")
-        return scaler
+        try:
+            with Path(path).open("r", encoding="utf-8") as handle:
+                metadata = json.load(handle)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                "Scaler must be JSON. To replace legacy pickle scalers, run "
+                "python -m stock_sim.migrate_scalers --config config/config.yaml"
+            ) from exc
+        if not isinstance(metadata, dict) or type(metadata.get("schema_version")) is not int or metadata["schema_version"] != 1:
+            raise ValueError("Unsupported scaler JSON schema_version")
+        return cls.from_metadata(metadata)
 
 
 def chronological_masks(

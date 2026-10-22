@@ -22,7 +22,7 @@ python -m stock_sim.export_onnx --config config/config.yaml
 | `data/processed/initial_ohlcv_window.json` | 初回推論用の過去60行 |
 | `data/generated/generated_ohlcv.parquet` | Python側で生成したOHLCVの確認用 |
 
-`models/lstm_model.pt`と`models/feature_scaler.pkl`はPython側の学習用です。Unityではmetadata JSONに出力された`mean`と`scale`を使います。
+`models/lstm_model.pt`と`models/feature_scaler.json`はPython側の学習用です。Unityではmetadata JSONに出力された`mean`と`scale`を使います。旧pickleスケーラーの移行手順はルートREADMEを参照してください。
 
 ## 3. 入出力仕様
 

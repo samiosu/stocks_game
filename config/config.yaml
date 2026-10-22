@@ -10,8 +10,8 @@ paths:
   stock_features: data/processed/stock_features.parquet
   sector_data: data/processed/sector_data.parquet
   feature_schema: data/processed/feature_schema.json
-  scaler: models/feature_scaler.pkl
-  relative_scaler: models/relative_target_scaler.pkl
+  scaler: models/feature_scaler.json
+  relative_scaler: models/relative_target_scaler.json
   checkpoint: models/lstm_model.pt
   generated_prices: data/generated/generated_prices.parquet
   generated_ohlcv: data/generated/generated_ohlcv.parquet

@@ -26,7 +26,9 @@ def test_yahoo_metadata_resolver_handles_all_na_text_columns():
         "currency": "JPY",
     }
 
-    result = resolver.resolve(frame, as_of="2026-08-18")
+    # This test exercises current provider metadata, not historical-price lookup.
+    as_of = pd.Timestamp.now(tz="UTC").date().isoformat()
+    result = resolver.resolve(frame, as_of=as_of)
 
     assert result.loc[0, "market_cap_jpy"] == 1_000_000_000_000
     assert result.loc[0, "market_cap_source"] == "yahoo_finance"

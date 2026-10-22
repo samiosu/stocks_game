@@ -11,6 +11,8 @@ data/generated/*.parquet
 models/*.pt
 models/*.onnx
 models/*.pkl
+models/feature_scaler.json
+models/relative_target_scaler.json
 reports/figures/*.png
 reports/*.html
 reports/*.csv

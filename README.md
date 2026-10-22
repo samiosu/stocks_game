@@ -57,7 +57,20 @@ Yahoo Financeで `^TPX` の履歴が欠損する場合は、設定済みの `130
 
 モデルはUnity Sentis/Inference Engineで対応しているONNX `LSTM` 演算子を使います。GRU時代のチェックポイントはLSTMと重み形式が異なるため再利用せず、設定を更新した状態で学習とONNX出力をやり直してください。
 
-学習・検証・テストは時系列順に固定し、デフォルトは2015–2021、2022–2023、2024–実行時点です。スケーラーはOHLCVの学習期間だけでfitし、`models/feature_scaler.pkl` に保存します。GRUや旧確率的LSTMのチェックポイントは互換性がないため、OHLCV設定で再学習してください。
+学習・検証・テストは時系列順に固定し、デフォルトは2015–2021、2022–2023、2024–実行時点です。スケーラーはOHLCVの学習期間だけでfitし、`models/feature_scaler.json` に保存します。GRUや旧確率的LSTMのチェックポイントは互換性がないため、OHLCV設定で再学習してください。
+
+### 既存スケーラーの移行
+
+スケーラーはデータ専用のJSON形式へ変更しました。旧`.pkl`は読み込まず、チェックポイントも`weights_only=True`で読み込みます。PyTorchは2.6以上、PyArrowは14.0.1以上が必要です。依存更新後、`config/config.yaml`の`paths.scaler`と`paths.relative_scaler`をそれぞれ`.json`へ変更してください。
+
+現在のOHLCV学習コードで作成した`.pt`にはスケーラーの数値も含まれているため、再学習せず次のコマンドでJSONを復元できます。
+
+```bash
+python -m pip install --upgrade -e '.[reports,onnx,dev]'
+python -m stock_sim.migrate_scalers --config config/config.yaml
+```
+
+この処理は旧pickleを開かず、既存のJSONも上書きしません。必要なmetadataがない旧チェックポイントは再学習してください。安全な読み込みに失敗した場合、制限を解除して読み直す処理はありません。外部由来のモデルは、JSONやweights-onlyでも巨大データなどのリスクがあるため、信頼できるものだけを使用してください。
 
 ## 生成とUnity
 

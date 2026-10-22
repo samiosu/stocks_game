@@ -56,7 +56,7 @@ export_onnx.py
 - `data/processed/stock_features.parquet`
 - `data/processed/sector_data.parquet`
 - `data/processed/feature_schema.json`
-- `models/feature_scaler.pkl`
+- `models/feature_scaler.json`
 
 ## OHLCVモデルとLSTM
 

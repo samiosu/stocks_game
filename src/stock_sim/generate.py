@@ -295,10 +295,9 @@ def _load_checkpoint(path: str | Path, device: Any) -> tuple[Any, dict[str, Any]
     require_torch()
     import torch
 
-    try:
-        checkpoint = torch.load(path, map_location=device, weights_only=False)
-    except TypeError:  # torch < 2.6
-        checkpoint = torch.load(path, map_location=device)
+    checkpoint = torch.load(path, map_location=device, weights_only=True)
+    if not isinstance(checkpoint, dict):
+        raise ValueError("Checkpoint must be a state_dict and metadata mapping")
     checkpoint_type = str(checkpoint.get("model_type", "")).lower()
     if checkpoint_type != "lstm_relative_ohlcv":
         raise ValueError(
@@ -327,18 +326,7 @@ def _relative_scaler_from_checkpoint(checkpoint: dict[str, Any]) -> FeatureScale
     columns = list(checkpoint.get("relative_columns", []))
     if columns != list(metadata.get("columns", [])):
         raise ValueError("Relative target scaler columns do not match the checkpoint")
-    scaler = FeatureScaler(columns)
-    scaler.mean_ = np.asarray(metadata.get("mean", []), dtype=np.float64)
-    scaler.scale_ = np.asarray(metadata.get("scale", []), dtype=np.float64)
-    if (
-        scaler.mean_.shape != (len(columns),)
-        or scaler.scale_.shape != (len(columns),)
-        or not np.isfinite(scaler.mean_).all()
-        or not np.isfinite(scaler.scale_).all()
-        or (scaler.scale_ <= 0).any()
-    ):
-        raise ValueError("Invalid relative target scaler metadata")
-    return scaler
+    return FeatureScaler.from_metadata(metadata)
 
 
 def _event_list(event_schedule: Any) -> list[dict[str, Any]]:
