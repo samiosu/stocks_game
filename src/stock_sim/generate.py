@@ -12,6 +12,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from packaging.version import Version
 
 from .config import config_path, ensure_parent, load_config, seed_everything, setup_logging
 from .constants import OHLCV_FIELDS, SECTOR_DEFINITIONS, SECTOR_IDS
@@ -295,10 +296,9 @@ def _load_checkpoint(path: str | Path, device: Any) -> tuple[Any, dict[str, Any]
     require_torch()
     import torch
 
-    try:
-        checkpoint = torch.load(path, map_location=device, weights_only=False)
-    except TypeError:  # torch < 2.6
-        checkpoint = torch.load(path, map_location=device)
+    if Version(torch.__version__) < Version("2.10.0"):
+        raise RuntimeError("PyTorch 2.10.0 or newer is required for safe checkpoint loading")
+    checkpoint = torch.load(path, map_location=device, weights_only=True)
     checkpoint_type = str(checkpoint.get("model_type", "")).lower()
     if checkpoint_type != "lstm_relative_ohlcv":
         raise ValueError(

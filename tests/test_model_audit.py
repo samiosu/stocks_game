@@ -86,8 +86,8 @@ def test_onnx_multistep_matches_python_with_same_residual(tmp_path):
                       ohlcv_columns=scaler.columns,relative_columns=target.columns,
                       volume_anchor=[1e6]*11,
                       relative_scaler_metadata=dict(columns=target.columns,mean=target.mean_.tolist(),scale=target.scale_.tolist()))
-    torch.save(checkpoint,tmp_path/'model.pt'); scaler.save(tmp_path/'scaler.pkl')
-    export_onnx_model(tmp_path/'model.pt',tmp_path/'scaler.pkl',tmp_path/'model.onnx')
+    torch.save(checkpoint,tmp_path/'model.pt'); scaler.save(tmp_path/'scaler.json')
+    export_onnx_model(tmp_path/'model.pt',tmp_path/'scaler.json',tmp_path/'model.onnx')
     session = ort.InferenceSession(str(tmp_path/'model.stochastic.onnx'),providers=['CPUExecutionProvider'])
     inference = OHLCVInference(model,scaler,target,volume_anchor=[1e6]*11).eval()
     # Price far outside the training scaler's +/-6 range exercises old clipping bug.

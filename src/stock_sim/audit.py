@@ -37,7 +37,7 @@ def metrics(bars, previous):
 def audit(output):
     torch.set_num_threads(1)
     model, checkpoint = _load_checkpoint('models/lstm_model.pt', torch.device('cpu'))
-    scaler = FeatureScaler.load('models/feature_scaler.pkl')
+    scaler = FeatureScaler.load('models/feature_scaler.json')
     frame = pd.read_parquet('data/processed/sector_data.parquet').sort_values('date').reset_index(drop=True)
     columns = checkpoint['ohlcv_columns']
     bars = frame[columns].to_numpy(float).reshape(-1, 11, 5)

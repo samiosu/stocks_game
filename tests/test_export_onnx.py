@@ -40,7 +40,7 @@ def test_exported_onnx_can_be_loaded(tmp_path: Path):
         },
     }
     checkpoint_path = tmp_path / "model.pt"
-    scaler_path = tmp_path / "scaler.pkl"
+    scaler_path = tmp_path / "scaler.json"
     output_path = tmp_path / "model.onnx"
     metadata_path = tmp_path / "model.metadata.json"
     torch.save(checkpoint, checkpoint_path)

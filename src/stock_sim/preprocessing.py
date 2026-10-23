@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
-import pickle
+import json
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -73,16 +73,48 @@ class FeatureScaler:
         return restored
 
     def save(self, path: str | Path) -> None:
+        if not self.fitted:
+            raise RuntimeError("FeatureScaler has not been fit")
         ensure_parent(path)
-        with Path(path).open("wb") as handle:
-            pickle.dump(self, handle)
+        with Path(path).open("w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "version": 1,
+                    "columns": self.columns,
+                    "mean": self.mean_.tolist(),
+                    "scale": self.scale_.tolist(),
+                },
+                handle,
+                ensure_ascii=False,
+                allow_nan=False,
+            )
 
     @classmethod
     def load(cls, path: str | Path) -> FeatureScaler:
-        with Path(path).open("rb") as handle:
-            scaler = pickle.load(handle)
-        if not isinstance(scaler, cls):
-            raise TypeError(f"Not a {cls.__name__}: {path}")
+        with Path(path).open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if not isinstance(data, dict) or data.get("version") != 1:
+            raise ValueError(f"Invalid {cls.__name__} format: {path}")
+        columns, mean, scale = data.get("columns"), data.get("mean"), data.get("scale")
+        if (
+            not isinstance(columns, list)
+            or not columns
+            or any(not isinstance(column, str) or not column for column in columns)
+            or len(set(columns)) != len(columns)
+            or not isinstance(mean, list)
+            or not isinstance(scale, list)
+            or len(mean) != len(columns)
+            or len(scale) != len(columns)
+            or any(type(value) not in (int, float) for value in mean + scale)
+        ):
+            raise ValueError(f"Invalid {cls.__name__} values: {path}")
+        mean_values = np.asarray(mean, dtype=np.float64)
+        scale_values = np.asarray(scale, dtype=np.float64)
+        if not np.isfinite(mean_values).all() or not np.isfinite(scale_values).all() or not (scale_values > 0).all():
+            raise ValueError(f"Invalid {cls.__name__} values: {path}")
+        scaler = cls(columns)
+        scaler.mean_ = mean_values
+        scaler.scale_ = scale_values
         return scaler
 
 
